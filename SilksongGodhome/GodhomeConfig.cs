@@ -60,8 +60,8 @@ namespace SilksongGodhome
             SkipBossKey = cfg.Bind(
                 "Debug", "SkipBossKey", KeyCode.F8,
                 "During a Pantheon run, skips the current arena and moves to the next. " +
-                "Godhome's bosses aren't ported yet, so this is currently the only way " +
-                "through a Pantheon - and it stays useful for reaching a specific fight.");
+                "A run now advances by itself when the room's own BossSceneController " +
+                "reports the fight won, so this is for reaching a specific arena.");
 
             SpawnBossKey = cfg.Bind(
                 "Debug", "SpawnBossKey", KeyCode.F6,

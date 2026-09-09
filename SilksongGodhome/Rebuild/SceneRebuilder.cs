@@ -837,6 +837,18 @@ namespace SilksongGodhome.Rebuild
                 fsms += Godhome.BehaviourBuilder.AddFsms(made[i].gameObject, d.Fsms);
             }
 
+            // Anything with a HealthManager is a boss as far as diagnosis goes. Tracing
+            // its FSM state changes is the fastest way to tell a boss that is
+            // misbehaving from one sitting in a state waiting for an event.
+            if (GodhomeConfig.TraceBossStates.Value)
+            {
+                foreach (HealthManager hm in root.GetComponentsInChildren<HealthManager>(true))
+                {
+                    if (hm != null && hm.GetComponent<Godhome.BossTrace>() == null)
+                        hm.gameObject.AddComponent<Godhome.BossTrace>();
+                }
+            }
+
             if (comps > 0 || fsms > 0)
             {
                 Plugin.Log.LogInfo(
