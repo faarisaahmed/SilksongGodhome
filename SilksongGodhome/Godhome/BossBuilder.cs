@@ -112,6 +112,15 @@ namespace SilksongGodhome.Godhome
                     go.AddComponent<BossWaker>();
                 }
 
+                // Death is EnemyDeathEffects' job in Hollow Knight, and that needs a
+                // corpse prefab we can't bring across - so the boss plays its own death
+                // clip instead. Added outside the FSM check: a boss with no behaviour
+                // should still die when you kill it.
+                if (root != null && HasHealth(root))
+                {
+                    go.AddComponent<BossDeath>();
+                }
+
                 Plugin.Log.LogInfo($"Godhome: spawned '{boss.Name}' at {at}.");
                 return go;
             }
@@ -200,6 +209,16 @@ namespace SilksongGodhome.Godhome
             // Applied last so children are parented onto a live object first. Hollow
             // Knight ships the Hero Damager inactive; its FSM switches it on mid-attack.
             if (!n.Active) go.SetActive(false);
+        }
+
+        private static bool HasHealth(BossData.Node n)
+        {
+            if (n.HasHealth) return true;
+            foreach (BossData.Node c in n.Children)
+            {
+                if (HasHealth(c)) return true;
+            }
+            return false;
         }
 
         private static readonly Dictionary<string, UnityEngine.Object> AssetCache =

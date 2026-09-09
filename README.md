@@ -445,6 +445,31 @@ Mato and Oro have thirty each. Those are baked like any other audio and re-linke
 when the FSM is rebuilt, so `AudioPlay` actions find a real clip. Everything else a
 Hollow Knight FSM points at - spawned prefabs, mixer snapshots - still can't cross.
 
+### Dying
+
+A boss whose health hit zero just stopped responding. Hollow Knight doesn't handle death
+in the boss's FSM - neither of Gruz Mother's even listens for the `"ZERO HP"` event
+`HealthManager.Die` sends. Death is `EnemyDeathEffects`, which spawns a separate corpse
+prefab and destroys the enemy, and those prefabs are Hollow Knight assets that can't cross
+the engine gap.
+
+The animations *can*, though - they're in each boss's own library. So `BossDeath` stops
+the FSMs, disables the damager and colliders, plays the boss's real death clip, lets the
+body fall, and fades it out.
+
+Clip choice is per-boss because Hollow Knight isn't consistent about it:
+
+| boss | clip |
+| --- | --- |
+| Gruz Mother, Vengefly King, Moss Charger, Gorb | `Death` |
+| Dung Defender | `Death Splat` / `Death Sink` / `Death Fly` |
+| False Knight | `Death Fall` -> `Death Land` |
+| Hornet, Mage Knight | `Death Air` / `Death Land` |
+| Mato, Oro | no death clip at all - the Nailmasters **bow** and then **rest**, which is their defeat in Hollow Knight |
+| Brooding Mawlek | nothing usable; fades |
+
+The Nailmasters keep their footing rather than dropping, since bowing is a standing pose.
+
 ### What a boss still needs
 
 Gruz Mother, fully scoped:
