@@ -1,11 +1,17 @@
 # Silksong Godhome
 
-> ### ⚠️ Experimental — a work in progress, not a playable mod
+> ### 🛑 Development has stopped
 >
-> This is an in-progress attempt to port Hollow Knight's Godhome into Silksong. Large
-> parts work; larger parts don't. Bosses appear and their FSMs load, but their behaviour
-> is incomplete. Expect breakage, expect it to change under you, and don't treat any of
-> it as finished.
+> This went a long way - further, as far as we can tell, than any previous attempt to
+> port Godhome into Silksong - and then stopped. Godhome's rooms rebuild with their
+> architecture, lighting, doors, benches, statues and Pantheon doors; the Pantheons
+> start; the bosses appear in their own arenas with Hollow Knight's own FSMs running
+> their own state graphs; the music plays. What never came together is a boss *fight*
+> you can finish. See [Where it got to](#where-it-got-to) for an honest account, and
+> [Why there is still hope](#why-there-is-still-hope) for what a future attempt should
+> know - because nothing here turned out to be impossible, which is the point.
+>
+> Not maintained. Issues and PRs will not be answered. Fork it freely.
 >
 > **It ships no Hollow Knight assets.** `SilksongGodhome/Baked/` is gitignored on
 > purpose - you regenerate it from your own copy of Hollow Knight with
@@ -118,8 +124,11 @@ python3 extract_godhome.py --scenes GG_Workshop GG_Atrium
 
 Needs `UnityPy` and `Pillow`. Then rebuild the DLL so the new data is embedded.
 
-Default bake is 16 scenes: the four connected rooms - `GG_Atrium`, `GG_Workshop` (the Hall of
-Gods), `GG_Atrium_Roof` and `GG_Blue_Room` - 13.87 MB, giving a ~14.5 MB DLL.
+Default bake is 17 scenes: the five hub rooms - `GG_Atrium`, `GG_Workshop` (the Hall of
+Gods), `GG_Atrium_Roof`, `GG_Blue_Room`, `GG_Land_of_Storms` - plus the twelve Pantheon
+of the Master arenas. That comes to roughly 195 MB of baked data and a ~177 MB DLL:
+mostly Hollow Knight's tk2d atlases, which are genuinely used art. Rooms themselves are
+deflated (about 15% of their raw size) and music is IMA ADPCM.
 
 Bake for `GG_Atrium`: 1,782 objects, 1,277 sprite renderers, 106 unique sprites,
 134 colliders, 17 camera lock areas, 2 respawn + 9 hazard markers, 6 shaders, and the
@@ -186,26 +195,88 @@ tools/
 
 ## Controls
 
+All configurable in `BepInEx/config/com.faaris.silksonggodhome.cfg`.
+
 | key | |
 | --- | --- |
 | `F10` | rebuild and warp straight to `GG_Atrium` (skips the menu; for iterating) |
+| `F8` | during a Pantheon run, skip to the next arena |
+| `F6` | spawn the boss named in `SpawnBossName` where you stand |
 
-## Status
+Boss FSM state changes are logged by default (`TraceBossStates`); that log is the most
+useful thing in the project for working out why a fight is not progressing.
 
-**Working:** menu entry revealed and relabelled; Godseeker save state; teleport-map
-registration; the extraction pipeline end to end. 16 scenes bake and verify - the four
-hub rooms plus all twelve Pantheon of the Master arenas - carrying geometry, terrain
-meshes, colliders, camera lock areas, respawn markers, transitions, scene bounds, Hollow
-Knight's own colour grading, and per-sprite materials.
+## Where it got to
 
-In game: Godhome's architecture renders with its real terrain and lighting, the doors
-between rooms work, the bench can be rested at (and saves), and the Pantheon doors start
-a run through Silksong's own `BossSequenceController`.
+Final state, honestly.
 
-**In-game:** the mode boots, the scene rebuilds (1,782 objects in ~270 ms), but the
-first live test black-screened. Cause and fix below.
+**Works, and was seen working in game:**
 
-### The donor scene must be a standalone room
+* The Godseeker entry on the play-mode menu, revealed and relabelled, running through
+  Silksong's own `BossSequenceController`.
+* A Godhome save slot with its own area art and name; save-and-quit returns you to it.
+* 17 rooms bake and verify byte-exact - the five hub rooms plus all twelve Pantheon of
+  the Master arenas - with architecture, terrain meshes, colliders, camera lock areas,
+  respawn markers, transitions, scene bounds and Hollow Knight's own colour grading.
+* Walking between rooms, the bench, the Hall of Gods statues, the Pantheon doors and
+  their challenge UI.
+* Bosses appear in their own arenas and run Hollow Knight's own FSM graphs. The last
+  log before development stopped has Gruz Mother going
+  `Big Fly Control (start) -> Wake -> GG Extra Pause -> Buzz`, with `bouncer_control`
+  and her collision FSM alongside, and `BossSceneController from the room is set up`.
+* Godhome's music, all eighteen tracks, played by the arena's own `ApplyMusicCue`
+  actions at the moments Hollow Knight asks for them.
+
+**Never came together:** a boss fight you can play to the end. Individually: False
+Knight's head mechanic, Mega Moss Charger's burrow, Hornet's needle throw, Gorb's
+needles, Brooding Mawlek staying visible, Oro's jump. Death animations and hit knockback
+were wired but never confirmed in play.
+
+**Never started:** the other 40 arenas, the four higher Pantheons, the Hall of Gods
+statue challenges, bindings.
+
+## Why there is still hope
+
+Nothing found here was impossible. That is worth saying plainly, because it is the
+opposite of how a stalled port usually ends.
+
+Three measurements, all reproducible from this repo:
+
+| | | how to check |
+| --- | --- | --- |
+| Godhome components Silksong still defines | **1863 of 1892** instances, only 4 distinct types absent | `tools/compaudit.py` |
+| PlayMaker actions the bosses use that Silksong still has | **93 of 93** | `tools/actionaudit.py` |
+| Component layouts derived automatically and read byte-exactly | **1289**, with **0** wrong | `tools/layoutaudit.py` |
+
+Hollow Knight's FSMs parse byte-exactly and load into Silksong's own PlayMaker as real
+actions - they are never interpreted or approximated. Its components are Silksong's
+components, by name, running the game's own code. Its sprite collections and animation
+libraries are byte-identical between the two copies of tk2d. There is no wall here.
+
+**What actually stopped it was the iteration loop.** A boss fight is an integration of
+several hundred small things - one FSM variable, one object reference, one collider
+layer - and each can fail silently and only in play. Every diagnosis cost a round trip
+through a human launching the game and describing what they saw. That is the bottleneck
+a next attempt should attack first, before any more content:
+
+1. **A way to test a fight without a person watching it.** Drive the game to an arena,
+   run the fight, and diff the FSM state trace against Hollow Knight's. `BossTrace`
+   already logs every state change; what is missing is the harness and a recorded
+   reference trace to compare against.
+2. **`FunctionCall` parameters.** `SendMessage` actions fail to load because these are
+   baked as null placeholders (`FsmBuilder.PopulateActionData`). Small, and it silently
+   breaks whichever states use them.
+3. **The FSM object references that still resolve to nothing.** Baked references cover
+   in-scene objects, prefabs, sounds and ScriptableObjects. Whatever is left is where
+   the remaining fights break.
+4. **Only then, more arenas.** The pipeline handles them already; it is the fights that
+   need the work.
+
+If you pick this up: read the commit messages. Every non-obvious thing this project
+learned is written down in one, at the point it was learned, with the evidence that
+settled it.
+
+### The donor scene must be a standalone room### The donor scene must be a standalone room
 
 Silksong composes rooms from a main scene plus additive sub-scenes, and the names look
 alike. `Bone_05_bellway` is **not** a room - it's an additive chunk holding only the Bone
@@ -557,6 +628,10 @@ Parents now resolve through an explicit order-to-object map.
 
 ### Where the remaining behaviour lives
 
+*Written partway through, and left as a record of how the approach was arrived at. The
+answer it reaches - that the FSMs are the real content - is what the whole-arena bake in
+the final commits is built on.*
+
 Silksong has the Godhome *C# classes*. What it doesn't have is Godhome's **PlayMaker FSM
 graphs**, and that is where most of the interactivity actually is - benches, doors
 opening, statues activating, water, the Pantheon sequences. GG_Atrium alone has 104 FSMs
@@ -572,24 +647,21 @@ So the split is:
   `BossDoorTargetLock`.
 * **FSMs** - the big one, and unavoidable for real Godhome behaviour.
 
-### Next
+### Postscript
 
-1. **The hub's own objects.** Statues and Pantheon doors are `MonoBehaviour`s
-   (`BossStatue`, `BossSequenceDoor`, `BossDoorTargetLock`) whose classes already exist
-   in Silksong - GG_Atrium has 5 `BossSequenceDoor` and 3 `BossDoorTargetLock`. Add
-   field specs to `monoread.py` and re-attach them, as `CameraLockArea` already is.
-2. **TransitionPoint.** 11 in GG_Atrium; needed to walk between Godhome's rooms.
-3. **PlayMaker FSMs.** The big one - 104 in GG_Atrium alone. Godhome's interactivity,
-   and every boss, is FSM graphs. Both games ship PlayMaker, which makes this possible
-   rather than easy.
-4. **The bosses.** 52 arenas. Port order should follow the Pantheon of the Master.
+The last thing found, on the last day, is a good example of the kind of problem this
+project was made of. Bringing across Hollow Knight's `BlurPlane` components - which the
+component audit correctly said Silksong still has - made Godhome's entire background
+disappear, because Silksong's camera rig does this every frame:
 
-Known visual gaps:
+```csharp
+BlurPlane closestBlurPlane = BlurPlane.ClosestBlurPlane;
+if (closestBlurPlane != null)
+    sceneCamera.farClipPlane = closestBlurPlane.PlaneZ - sceneCamera.z + clipEpsilon;
+```
 
-* **The floor is solid but invisible.** GG_Atrium's terrain is drawn by 15 `Chunk*`
-  MeshRenderers - the tk2d tilemap's generated meshes - and only the *colliders* are
-  baked, not the meshes. Everything you can see is the 1,277 sprite renderers. Baking
-  chunk meshes (15 shared `Mesh` objects plus the tilemap's sprite-collection material)
-  is the next visual job.
-* `Sprites/Lit` (786 renderers) maps to `Sprites/Default`, so scenery renders unlit
-  rather than picking up scene lighting.
+Eleven blur planes rebuilt at Hollow Knight's Z pulled the far clip plane in and clipped
+the room out of the scene camera. The boss sat near z=0 and survived; the architecture
+did not. The component was real, the port of it was faithful, and it was exactly wrong -
+because a depth convention belongs to the host game's camera, not to the content. Every
+remaining bug in this project is likely to be that shape.
