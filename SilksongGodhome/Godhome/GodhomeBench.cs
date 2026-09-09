@@ -17,24 +17,26 @@ namespace SilksongGodhome.Godhome
     /// Silksong's own public API rather than emulating the graph:
     ///
     ///   sit  - PlayerData.atBench, relinquish control, stop gravity, snap to the bench,
-    ///          set the bench as the respawn point (HeroController.SetBenchRespawn) and save.
+    ///          heal to full and save.
     ///   rise - the reverse, mirroring RestBenchHelper.OnDisable, which is Silksong's own
     ///          "get off the bench" path.
+    ///
+    /// Note it does *not* become your respawn point. Godhome's bench is a place to heal
+    /// and swap tools between attempts; dying in a Pantheon returns you to the Atrium,
+    /// not to the bench, so calling SetBenchRespawn here would be wrong.
     /// </summary>
     internal class GodhomeBench : GodhomeInteractable
     {
         /// <summary>Set by the rebuilder from the scene the bench belongs to.</summary>
         public string SceneName;
 
-        private RespawnMarker _marker;
         private Vector3 _sitPoint;
 
         protected override string Prompt =>
-            Engaged ? "Press Up to rise" : "Press Up to rest";
+            Engaged ? "Press Up to rise" : "Press Up to rest\n(restores health and silk)";
 
         private void Awake()
         {
-            _marker = GetComponent<RespawnMarker>();
             _sitPoint = transform.position;
         }
 
@@ -61,6 +63,20 @@ namespace SilksongGodhome.Godhome
 
             pd.atBench = true;
 
+            // Restore health and silk - the reason to rest at all.
+            try
+            {
+                pd.SetInt(nameof(PlayerData.health), pd.maxHealth);
+                pd.SetInt(nameof(PlayerData.silk), pd.CurrentSilkMax);
+                hero.MaxHealth();
+                EventRegister.SendEvent(EventRegisterEvents.HealthUpdate);
+                EventRegister.SendEvent(EventRegisterEvents.HeroHealedToMax);
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning("Godhome: couldn't restore health at the bench: " + e.Message);
+            }
+
             // Hornet's own sit animation. The BENCHREST events turned out to be a dead
             // end - the hero carries no bench FSM (its FSM list is Sprint, Mantle, Nail
             // Arts and so on), because in a real Silksong scene that FSM lives on the
@@ -71,12 +87,6 @@ namespace SilksongGodhome.Godhome
             // drives it straight back to Idle on the next frame.
             hero.StopAnimationControl();
             PlaySit();
-
-            // This is the part that actually matters: the bench becomes your respawn
-            // point. respawnType 1 is the "resting on a bench" type the respawn path
-            // checks for.
-            if (_marker != null) hero.SetBenchRespawn(_marker, SceneName, 1);
-            else hero.SetBenchRespawn(name, SceneName, 1, true);
 
             try
             {

@@ -284,7 +284,7 @@ ours and the *logic* is still Silksong's; or it's pure FSM and not ported yet.
 | Scene colour/lighting | `SceneManager` fields | `CustomSceneManager`, identical field names | Values copied over, `overrideColorSettings` forced |
 | Scene bounds | `tk2dTileMap.width/height` | `CameraController` reads the same | Donor tilemap resized to Godhome's |
 | Terrain | tk2d chunk meshes | plain `MeshFilter`/`MeshRenderer` | Meshes decoded and rebuilt |
-| Bench | "Bench Control" FSM | **Still looks up an FSM by that exact name**; `SetBenchRespawn`, `PlayerData.atBench`, `RestBenchHelper` are all public C# | `GodhomeBench` reimplements the FSM's effects through those APIs |
+| Bench | "Bench Control" FSM | **Still looks up an FSM by that exact name**; `PlayerData.atBench`, `RestBenchHelper` are public C# | `GodhomeBench` heals and saves. It deliberately does *not* set a respawn point - Godhome's bench is for healing and swapping tools between attempts, and dying in a Pantheon returns you to the Atrium |
 | Pantheon entrance | `BossSequenceDoor` + challenge FSM | `BossSequenceDoor` exists; `BossSequenceController.SetupNewSequence` is **public static** | `PantheonDoor` draws the prompt, then calls `SetupNewSequence` - the same call HK's FSM makes |
 | Pantheon run | `BossSequence` assets in `Resources/GG` | `BossSequence`/`BossScene` classes intact, assets absent | Rebuilt as live ScriptableObjects from `sequences.bin` |
 | Statue: strike | `BossStatueLever` (nail) | **`BossStatueLever` is fully implemented** and checks `collision.tag == "Nail Attack"` | `GodhomeStatue` uses the same tag, so Hornet's needle swaps the statue |
@@ -424,6 +424,19 @@ Each baked boss records the Hollow Knight scene it came from, so `BossRegistry` 
 them by arena (reading only each file's header) and `SceneRebuilder` puts them back where
 Hollow Knight had them when that arena is rebuilt. The debug key still works for dropping
 one anywhere.
+
+Two things had to be right for a boss to land in the right place:
+
+* **World, not local, position.** A boss's transform is local to whatever it's parented
+  under, and in Hollow Knight that's often an offset container - False Knight and Brooding
+  Mawlek both sit under a "Battle Scene" object roughly 14 units across and 32 up, so
+  spawning at their local position put them well outside the arena. The root is baked in
+  world space now; children keep their local transforms.
+* **No nested duplicates.** Boss discovery looks for `HealthManager` + `tk2dSpriteAnimator`,
+  which also matches False Knight's `Head` - a child of False Knight that's already baked
+  as part of him. Candidates that sit inside another candidate are dropped, so he doesn't
+  arrive with a second head floating beside him. Mato and Oro are siblings rather than
+  nested, so both survive.
 
 **Sound effects transfer.** A boss's FSM references its clips through `fsmObjectParams`
 with `typeName = "UnityEngine.AudioClip"` - Gruz Mother has four

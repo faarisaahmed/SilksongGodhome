@@ -276,7 +276,30 @@ def bake(scene_name, boss_name, log=print):
                 out.append(o)
         return out
 
-    def write_node(gpid):
+    def world_of(gpid):
+        """
+        Accumulated position and scale up the parent chain.
+
+        A boss's own transform is local to whatever it's parented under, and in Hollow
+        Knight that's often an offset container - False Knight and Brooding Mawlek both
+        sit under a "Battle Scene" object about 14 units across and 32 up. Spawning at the
+        local position puts them in the wrong part of the arena.
+        """
+        x = y = z = 0.0
+        sx = sy = sz = 1.0
+        cur = tr.get(g2t.get(gpid))
+        guard = 0
+        while cur is not None and guard < 32:
+            guard += 1
+            p = cur.get("m_LocalPosition") or {}
+            sc_ = cur.get("m_LocalScale") or {}
+            x += p.get("x", 0.0); y += p.get("y", 0.0); z += p.get("z", 0.0)
+            sx *= sc_.get("x", 1.0); sy *= sc_.get("y", 1.0); sz *= sc_.get("z", 1.0)
+            f = (cur.get("m_Father") or {}).get("m_PathID", 0)
+            cur = tr.get(f) if f else None
+        return (x, y, z), (sx, sy, sz)
+
+    def write_node(gpid, is_root=False):
         d = go[gpid]
         t = tr.get(g2t.get(gpid)) or {}
         pos = t.get("m_LocalPosition") or {}
@@ -286,9 +309,19 @@ def bake(scene_name, boss_name, log=print):
         w.string(d.get("m_Name") or "")
         w.i32(int(d.get("m_Layer") or 0))
         w.boolean(bool(d.get("m_IsActive", True)))
-        w.vec3(pos.get("x", 0.0), pos.get("y", 0.0), pos.get("z", 0.0))
-        w.vec4(rot.get("x", 0.0), rot.get("y", 0.0), rot.get("z", 0.0), rot.get("w", 1.0))
-        w.vec3(scl.get("x", 1.0), scl.get("y", 1.0), scl.get("z", 1.0))
+
+        # The root is written in world space - it has no parent on the Silksong side, so
+        # a local position would be measured against the wrong origin. Children keep
+        # their local transforms.
+        if is_root:
+            wp, ws = world_of(gpid)
+            w.vec3(*wp)
+            w.vec4(rot.get("x", 0.0), rot.get("y", 0.0), rot.get("z", 0.0), rot.get("w", 1.0))
+            w.vec3(*ws)
+        else:
+            w.vec3(pos.get("x", 0.0), pos.get("y", 0.0), pos.get("z", 0.0))
+            w.vec4(rot.get("x", 0.0), rot.get("y", 0.0), rot.get("z", 0.0), rot.get("w", 1.0))
+            w.vec3(scl.get("x", 1.0), scl.get("y", 1.0), scl.get("z", 1.0))
 
         rb = None
         boxes = []
@@ -363,7 +396,7 @@ def bake(scene_name, boss_name, log=print):
         for k in kids:
             write_node(k)
 
-    write_node(boss_gid)
+    write_node(boss_gid, is_root=True)
 
     # write_fsm resolves audio as it goes, so the clip table is written after it and the
     # reader seeks back - instead, FSMs are serialised into a scratch writer first.
@@ -416,12 +449,45 @@ def find_bosses(scene_name, log=print):
         gid = struct.unpack_from("<q", o.get_raw_data(), 4)[0]
         have.setdefault(gid, set()).add(cn)
 
+    candidates = [gid for gid, kinds in have.items()
+                  if {"HealthManager", "tk2dSpriteAnimator"} <= kinds]
+
+    # Drop anything that already sits inside another candidate. False Knight's "Head" is
+    # a child of "False Knight New" and is baked as part of it, so spawning it separately
+    # would put a second, headless-boss's head in the arena.
+    tr = {}
+    for o in scene.scene_objects("Transform"):
+        try:
+            tr[o.path_id] = o.read_typetree()
+        except Exception:
+            pass
+    g2t = {}
+    for pid, d in tr.items():
+        g2t[(d.get("m_GameObject") or {}).get("m_PathID")] = pid
+
+    def ancestors(gid):
+        out = set()
+        cur = tr.get(g2t.get(gid))
+        guard = 0
+        while cur is not None and guard < 32:
+            guard += 1
+            f = (cur.get("m_Father") or {}).get("m_PathID", 0)
+            if not f or f not in tr:
+                break
+            cur = tr[f]
+            pg = (cur.get("m_GameObject") or {}).get("m_PathID")
+            if pg:
+                out.add(pg)
+        return out
+
+    cand_set = set(candidates)
+    roots = [gid for gid in candidates if not (ancestors(gid) & cand_set)]
+
     out = []
-    for gid, kinds in have.items():
-        if {"HealthManager", "tk2dSpriteAnimator"} <= kinds:
-            n = names.get(gid)
-            if n:
-                out.append(n)
+    for gid in roots:
+        n = names.get(gid)
+        if n:
+            out.append(n)
     return sorted(set(out))
 
 
