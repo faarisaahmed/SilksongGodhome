@@ -18,9 +18,11 @@ import wave
 
 TARGET_RATE = 22050
 MAX_SECONDS = 12.0     # long ambient loops get truncated to this
+MUSIC_SECONDS = 400.0  # music is not an effect: a Godhome track runs three to five
+                       # minutes and truncating it would cut off mid-phrase
 
 
-def decode_clip(clip_obj):
+def decode_clip(clip_obj, max_seconds=None):
     """
     (pcm16_bytes, sample_count, rate) for an AudioClip, or None.
 
@@ -59,7 +61,7 @@ def decode_clip(clip_obj):
         frames, _ = audioop.ratecv(frames, width, channels, rate, TARGET_RATE, None)
         rate = TARGET_RATE
 
-    max_bytes = int(MAX_SECONDS * rate) * 2
+    max_bytes = int((max_seconds if max_seconds else MAX_SECONDS) * rate) * 2
     if len(frames) > max_bytes:
         frames = frames[:max_bytes]
 

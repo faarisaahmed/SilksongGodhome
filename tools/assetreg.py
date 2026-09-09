@@ -11,9 +11,17 @@ ten arenas sharing EnemyHitEffects, costs one copy.
 import os
 import struct
 
-from monoread import HEADER
+from monoread import HEADER, script_ptr
 from tk2dparse import Tk2dReader
-from audiobake import decode_clip
+from audiobake import decode_clip, MAX_SECONDS, MUSIC_SECONDS
+import adpcm
+from typelayout import layout_of
+from layoutread import parse as parse_layout
+
+
+# Above this many samples a clip is treated as music rather than an effect: about
+# twenty seconds at 22 kHz.
+LONG_CLIP_SAMPLES = 22050 * 20
 
 
 def safe(name, fallback="asset"):
@@ -59,6 +67,8 @@ class AssetRegistry:
         self.prefabs = []          # (name, file, root gpid)
         self._prefab = {}
         self.prefab_queue = []
+        self.assets = []           # (name, typeName, layout, values)
+        self._asset = {}
 
     # -- files ---------------------------------------------------------
 
@@ -143,9 +153,63 @@ class AssetRegistry:
         self._lib[key] = idx
         return idx
 
+    # -- scriptable objects ---------------------------------------------
+
+    def scriptable_name(self, ptr, from_file=None):
+        """
+        Register a ScriptableObject asset and return its table name, or "".
+
+        This is what makes Godhome's music work. "Gods and Glory" is not played by any
+        code we could call - it is a MusicCue asset that an ApplyMusicCue action in the
+        arena's own FSM hands to the AudioManager at the exact moment Hollow Knight wants
+        it. MusicCue exists in Silksong with the same shape, so baking the asset and
+        rebuilding it puts the cue back where the FSM can reach it.
+
+        Any ScriptableObject whose layout derives cleanly goes through here, not just
+        music - the same path carries boss scene lists and audio event tables.
+        """
+        if not ptr or not ptr.get("m_PathID"):
+            return ""
+        obj = self.scene.resolve(ptr, from_file or self.lvl)
+        if obj is None or obj.type.name != "MonoBehaviour":
+            return ""
+
+        key = (self.scene.file_of(obj), obj.path_id)
+        if key in self._asset:
+            return self._asset[key]
+
+        raw = obj.get_raw_data()
+        try:
+            ms = self.scene.resolve(script_ptr(raw), self.scene.file_of(obj))
+            cn = ms.read_typetree().get("m_ClassName") if ms else None
+        except Exception:
+            cn = None
+        if not cn:
+            return ""
+
+        lay = layout_of(cn)
+        if lay is None:
+            return ""
+        try:
+            values, exact = parse_layout(raw, lay)
+        except Exception:
+            return ""
+        if not exact:
+            # Same rule as everywhere: a layout that does not land on the end of the
+            # buffer is wrong, and a wrong asset is worse than a missing one.
+            return ""
+
+        base = safe(cn, "asset")
+        name = f"so_{base}_{len(self.assets)}"
+        # Reserve the name before recursing: an asset that points at another asset which
+        # points back would otherwise register itself twice.
+        self._asset[key] = name
+        self.assets.append([name, cn, lay, values, self.scene.file_of(obj)])
+        return name
+
     # -- audio ---------------------------------------------------------
 
-    def audio_name(self, ptr, from_file=None):
+    def audio_name(self, ptr, from_file=None, max_seconds=None):
         if not ptr or not ptr.get("m_PathID"):
             return ""
         key = (ptr.get("m_FileID"), ptr.get("m_PathID"), from_file or self.lvl)
@@ -160,19 +224,41 @@ class AssetRegistry:
         except Exception:
             cname = "clip"
         rname = "audio_" + safe(cname, "clip")
-        decoded = decode_clip(obj)
+        # Decoded at full length first, then judged. A clip's length is the only
+        # reliable way to tell music from a sound effect - and getting it wrong is why
+        # "Gods and Glory" was coming across as its first twelve seconds.
+        decoded = decode_clip(obj, max_seconds=max_seconds or MUSIC_SECONDS)
         if decoded is None:
             self.log(f"    ! clip '{cname}' could not be decoded")
             self._audio[key] = ""
             return ""
         pcm, count, rate = decoded
-        path = os.path.join(self.out, rname + ".pcm")
+
+        # Anything long enough to be music goes across whole, as ADPCM: a four-minute
+        # track is thirteen megabytes as 16-bit PCM and three as four-bit codes, and on
+        # orchestral material at 22 kHz that is a far better trade than halving the
+        # sample rate. Short clips are effects, and stay as PCM at the effect length.
+        fmt = 0
+        data = pcm
+        ext = ".pcm"
+        if count > LONG_CLIP_SAMPLES:
+            data = adpcm.encode(pcm)
+            fmt = 1
+            ext = ".adpcm"
+            self.log(f"    music {rname} ({count / rate:.0f}s, {len(data) // 1024} KB ADPCM)")
+        else:
+            cap = int(MAX_SECONDS * rate)
+            if count > cap:
+                count = cap
+                data = pcm[:cap * 2]
+
+        path = os.path.join(self.out, rname + ext)
         if not os.path.exists(path):
             os.makedirs(self.out, exist_ok=True)
             with open(path, "wb") as f:
-                f.write(pcm)
+                f.write(data)
         self._audio[key] = rname
-        self.clips[rname] = (count, rate)
+        self.clips[rname] = (count, rate, fmt)
         return rname
 
     # -- prefabs -------------------------------------------------------
@@ -271,9 +357,30 @@ class AssetRegistry:
                     w.i32(fr["eventInt"])
                     w.f32(fr["eventFloat"])
 
+    def write_assets(self, w, resolve_ref):
+        """
+        The ScriptableObject table. Written last, because an asset's own fields can name
+        further assets and the list grows while it is being serialised.
+        """
+        from compbake import write_component
+        i = 0
+        bufs = []
+        while i < len(self.assets):
+            name, cn, lay, values, afile = self.assets[i]
+            from ggformat import Writer
+            aw = Writer()
+            write_component(aw, cn, lay, values, resolve_ref)
+            bufs.append((name, aw.bytes()))
+            i += 1
+        w.i32(len(bufs))
+        for name, buf in bufs:
+            w.string(name)
+            w.buf += buf
+
     def write_clips(self, w):
         w.i32(len(self.clips))
-        for rname, (count, rate) in sorted(self.clips.items()):
+        for rname, (count, rate, fmt) in sorted(self.clips.items()):
             w.string(rname)
             w.i32(count)
             w.i32(rate)
+            w.i32(fmt)      # 0 = 16-bit PCM, 1 = IMA ADPCM

@@ -174,62 +174,11 @@ namespace SilksongGodhome.Godhome
 
                     b.Collections = new Collection[r.ReadInt32()];
                     for (int ci = 0; ci < b.Collections.Length; ci++)
-                    {
-                        var col = new Collection { Name = r.ReadString() };
-                        col.Textures = new string[r.ReadInt32()];
-                        for (int i = 0; i < col.Textures.Length; i++) col.Textures[i] = r.ReadString();
-                        col.Defs = new SpriteDef[r.ReadInt32()];
-                        for (int i = 0; i < col.Defs.Length; i++)
-                        {
-                            var d = new SpriteDef
-                            {
-                                Name = r.ReadString(),
-                                MaterialId = r.ReadInt32(),
-                                TexelSize = new Vector2(r.ReadSingle(), r.ReadSingle()),
-                            };
-                            d.Positions = ReadV3(r);
-                            d.Uvs = ReadV2(r);
-                            d.BoundsData = ReadV3(r);
-                            d.UntrimmedBoundsData = ReadV3(r);
-                            int n = r.ReadInt32();
-                            d.Indices = new int[n];
-                            for (int k = 0; k < n; k++) d.Indices[k] = r.ReadInt32();
-                            col.Defs[i] = d;
-                        }
-                        b.Collections[ci] = col;
-                    }
+                        b.Collections[ci] = ReadCollection(r);
 
                     b.Libraries = new Library[r.ReadInt32()];
                     for (int li = 0; li < b.Libraries.Length; li++)
-                    {
-                        var lib = new Library { Name = r.ReadString() };
-                        lib.Clips = new Clip[r.ReadInt32()];
-                        for (int i = 0; i < lib.Clips.Length; i++)
-                        {
-                            var c = new Clip
-                            {
-                                Name = r.ReadString(),
-                                Fps = r.ReadSingle(),
-                                LoopStart = r.ReadInt32(),
-                                WrapMode = r.ReadInt32(),
-                            };
-                            c.Frames = new Frame[r.ReadInt32()];
-                            for (int k = 0; k < c.Frames.Length; k++)
-                            {
-                                c.Frames[k] = new Frame
-                                {
-                                    CollectionIndex = r.ReadInt32(),
-                                    SpriteId = r.ReadInt32(),
-                                    TriggerEvent = r.ReadBoolean(),
-                                    EventInfo = r.ReadString(),
-                                    EventInt = r.ReadInt32(),
-                                    EventFloat = r.ReadSingle(),
-                                };
-                            }
-                            lib.Clips[i] = c;
-                        }
-                        b.Libraries[li] = lib;
-                    }
+                        b.Libraries[li] = ReadLibrary(r);
 
                     int nclips = r.ReadInt32();
                     for (int i = 0; i < nclips; i++)
@@ -274,6 +223,67 @@ namespace SilksongGodhome.Godhome
                 foreach (FsmData.State s in f.States) actions += s.Actions.ActionNames.Length;
             }
             foreach (Node c in n.Children) Walk(c, ref nodes, ref fsms, ref states, ref actions);
+        }
+
+        /// <summary>
+        /// One tk2d sprite collection. Shared with the scene format, since an arena's
+        /// objects index the same tables its bosses do.
+        /// </summary>
+        public static Collection ReadCollection(BinaryReader r)
+        {
+            var col = new Collection { Name = r.ReadString() };
+            col.Textures = new string[r.ReadInt32()];
+            for (int i = 0; i < col.Textures.Length; i++) col.Textures[i] = r.ReadString();
+            col.Defs = new SpriteDef[r.ReadInt32()];
+            for (int i = 0; i < col.Defs.Length; i++)
+            {
+                var d = new SpriteDef
+                {
+                    Name = r.ReadString(),
+                    MaterialId = r.ReadInt32(),
+                    TexelSize = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                };
+                d.Positions = ReadV3(r);
+                d.Uvs = ReadV2(r);
+                d.BoundsData = ReadV3(r);
+                d.UntrimmedBoundsData = ReadV3(r);
+                int n = r.ReadInt32();
+                d.Indices = new int[n];
+                for (int k = 0; k < n; k++) d.Indices[k] = r.ReadInt32();
+                col.Defs[i] = d;
+            }
+            return col;
+        }
+
+        public static Library ReadLibrary(BinaryReader r)
+        {
+            var lib = new Library { Name = r.ReadString() };
+            lib.Clips = new Clip[r.ReadInt32()];
+            for (int i = 0; i < lib.Clips.Length; i++)
+            {
+                var c = new Clip
+                {
+                    Name = r.ReadString(),
+                    Fps = r.ReadSingle(),
+                    LoopStart = r.ReadInt32(),
+                    WrapMode = r.ReadInt32(),
+                };
+                c.Frames = new Frame[r.ReadInt32()];
+                for (int k = 0; k < c.Frames.Length; k++)
+                {
+                    c.Frames[k] = new Frame
+                    {
+                        CollectionIndex = r.ReadInt32(),
+                        SpriteId = r.ReadInt32(),
+                        TriggerEvent = r.ReadBoolean(),
+                        EventInfo = r.ReadString(),
+                        EventInt = r.ReadInt32(),
+                        EventFloat = r.ReadSingle(),
+                    };
+                }
+                lib.Clips[i] = c;
+            }
+            return lib;
         }
 
         private static Node ReadNode(BinaryReader r)
@@ -365,7 +375,7 @@ namespace SilksongGodhome.Godhome
             return sb.ToString();
         }
 
-        private static Vector3[] ReadV3(BinaryReader r)
+        internal static Vector3[] ReadV3(BinaryReader r)
         {
             var a = new Vector3[r.ReadInt32()];
             for (int i = 0; i < a.Length; i++)
@@ -373,7 +383,7 @@ namespace SilksongGodhome.Godhome
             return a;
         }
 
-        private static Vector2[] ReadV2(BinaryReader r)
+        internal static Vector2[] ReadV2(BinaryReader r)
         {
             var a = new Vector2[r.ReadInt32()];
             for (int i = 0; i < a.Length; i++)

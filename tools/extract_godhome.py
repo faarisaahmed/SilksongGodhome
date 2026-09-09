@@ -19,13 +19,25 @@ The Hollow Knight path defaults to the GOG/Wineskin install; override with --hk.
 """
 
 import argparse
+import collections
 import os
+import struct
 import sys
 
 from ggformat import (Writer, MAGIC, FORMAT_VERSION,
                       HAS_SPRITE, HAS_BOX, HAS_EDGE, HAS_POLY,
                       HAS_CAMLOCK, HAS_RESPAWN, HAS_HAZARD, HAS_TRANSITION,
-                      HAS_SIMPLE, HAS_MESH, HAS_SEQDOOR, HAS_STATUE, HAS_AUDIO)
+                      HAS_SIMPLE, HAS_MESH, HAS_SEQDOOR, HAS_STATUE, HAS_AUDIO,
+                      HAS_TK2D, HAS_FSM, HAS_COMPS)
+from assetreg import AssetRegistry
+from typelayout import layout_of
+from layoutread import parse as parse_layout
+from compbake import write_component
+from fsmvalidate import parse_fsm_component
+import fsmbake
+from fsmbake import write_fsm
+from bossbake import read_sprite, read_animator
+from prefabbake import write_prefab, write_behaviour
 from monoread import (script_ptr, read_fields,
                       CAMERA_LOCK_AREA, RESPAWN_MARKER, HAZARD_RESPAWN_MARKER,
                       TK2D_TILEMAP, SCENE_MANAGER, TRANSITION_POINT,
@@ -131,14 +143,15 @@ def collect_components(scene, go_ptr, from_file):
     """Map component type name -> typetree for one GameObject."""
     go = scene.resolve(go_ptr, from_file)
     if go is None:
-        return None, {}
+        return None, {}, {}, []
     try:
         god = go.read_typetree()
     except Exception:
-        return None, {}
+        return None, {}, {}, []
 
     comps = {}
     monos = {}
+    mono_list = []          # (className, raw) in component order, duplicates kept
     for c in (god.get("m_Component") or []):
         ptr = c.get("component") if isinstance(c, dict) else None
         if ptr is None and isinstance(c, dict):
@@ -165,10 +178,12 @@ def collect_components(scene, go_ptr, from_file):
                 raw = obj.get_raw_data()
                 ms = scene.resolve(script_ptr(raw), from_file)
                 if ms is not None:
-                    monos[ms.read_typetree().get("m_ClassName")] = raw
+                    cn = ms.read_typetree().get("m_ClassName")
+                    monos[cn] = raw
+                    mono_list.append((cn, raw))
             except Exception:
                 pass
-    return god, comps, monos
+    return god, comps, monos, mono_list
 
 
 def find_scene_bounds(scene, log):
@@ -349,7 +364,7 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
               "camlock": 0, "respawn": 0, "hazard": 0, "transition": 0, "simple": 0, "mesh": 0, "seqdoor": 0, "statue": 0, "audio": 0}
 
     for order_i, (pid, tdata, parent_idx) in enumerate(order):
-        god, comps, monos = collect_components(scene, tdata.get("m_GameObject"), lvl)
+        god, comps, monos, mono_list = collect_components(scene, tdata.get("m_GameObject"), lvl)
         if god is None:
             # Skipping without remapping would shift every later parent index, so the
             # parent is resolved through order_to_obj rather than used directly.
@@ -368,6 +383,8 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
             "rot": (rot.get("x", 0.0), rot.get("y", 0.0), rot.get("z", 0.0), rot.get("w", 1.0)),
             "scale": (scl.get("x", 1.0), scl.get("y", 1.0), scl.get("z", 1.0)),
             "mask": 0,
+            "monos": mono_list,
+            "go_pid": (tdata.get("m_GameObject") or {}).get("m_PathID"),
         }
 
         srs = comps.get("SpriteRenderer") or []
@@ -581,6 +598,195 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
             go_to_obj[go_pid] = len(objects)
         objects.append(rec)
 
+    # -- behaviour ------------------------------------------------------
+    #
+    # A second pass, because everything here needs the finished object index: a component
+    # field pointing at another object in the room is written as that object's position
+    # in this list, and PlayMaker's own parameters are full of them.
+    #
+    # These are the components that make Godhome a place rather than a picture of one -
+    # Recoil, so a hit knocks a boss back; EnemyDeathEffects, so it dies properly;
+    # BossSceneController and the Battle Scene FSMs, which are what actually start and
+    # end a fight.
+    reg = AssetRegistry(scene, out_dir, log)
+    fsm_owner_file = [lvl]
+
+    def resolve_ref(ptr):
+        """(object index, component type, baked resource name) for a Hollow Knight PPtr."""
+        if not ptr or not ptr.get("m_PathID"):
+            return -1, "", ""
+        obj = scene.resolve(ptr, lvl)
+        if obj is None:
+            return -1, "", ""
+
+        tname = obj.type.name
+        if tname == "GameObject":
+            if scene.file_of(obj) == lvl:
+                return go_to_obj.get(obj.path_id, -1), "", ""
+            return -1, "", reg.prefab_name(ptr, lvl)
+
+        if tname == "AudioClip":
+            return -1, "", reg.audio_name(ptr, lvl)
+
+        # A ScriptableObject - a MusicCue, an audio event table, a boss scene list. These
+        # are what Hollow Knight's own code reaches for, so they are baked and rebuilt
+        # rather than dropped.
+        if tname == "MonoBehaviour" and scene.file_of(obj) != lvl:
+            so = reg.scriptable_name(ptr, lvl)
+            if so:
+                return -1, "", so
+
+        # A component reference: record which object holds it and what to look for.
+        if scene.file_of(obj) == lvl:
+            try:
+                raw = obj.get_raw_data()
+                owner = struct.unpack_from("<q", raw, 4)[0]
+            except Exception:
+                owner = 0
+            oi = go_to_obj.get(owner, -1)
+            if oi < 0:
+                return -1, "", ""
+            cn = tname
+            if tname == "MonoBehaviour":
+                try:
+                    ms = scene.resolve(script_ptr(obj.get_raw_data()), lvl)
+                    cn = ms.read_typetree().get("m_ClassName") if ms else ""
+                except Exception:
+                    cn = ""
+            return oi, cn or "", ""
+        return -1, "", ""
+
+    def _fsm_asset(p):
+        """
+        An FsmObject parameter: a sound, or a ScriptableObject.
+
+        The second is what makes Godhome's music work. "Gods and Glory" is not played by
+        any code we could call - it is a MusicCue handed to the AudioManager by an
+        ApplyMusicCue action in the arena's own FSM, at the moment Hollow Knight wants it.
+        """
+        n = reg.audio_name(p, fsm_owner_file[0])
+        return n or reg.scriptable_name(p, fsm_owner_file[0])
+
+    fsmbake.ASSET_RESOLVER = _fsm_asset
+    fsmbake.GAMEOBJECT_RESOLVER = lambda p: _fsm_go_ref(p)
+
+    def _fsm_go_ref(ptr):
+        """
+        An FSM GameObject parameter: a prefab name, or an object index written as "#12".
+
+        PlayMaker holds these as plain object references, so both kinds have to fit in one
+        string. A prefab is spawned; an object index is looked up in the rebuilt room -
+        which is what makes $Battle Scene, $Camera and the rest resolve at all.
+        """
+        if not ptr or not ptr.get("m_PathID"):
+            return ""
+        obj = scene.resolve(ptr, fsm_owner_file[0])
+        if obj is None:
+            return ""
+        if obj.type.name == "GameObject" and scene.file_of(obj) == lvl:
+            oi = go_to_obj.get(obj.path_id, -1)
+            return f"#{oi}" if oi >= 0 else ""
+        return reg.prefab_name(ptr, fsm_owner_file[0])
+
+    skipped = collections.Counter()
+    bstats = {"comps": 0, "fsms": 0, "tk2d": 0}
+
+    def bake_behaviour(rec, monos, from_file):
+        """Components, tk2d and FSMs for one object, into its own buffers."""
+        comps_buf = Writer()
+        ncomps = 0
+        fsms_buf = Writer()
+        nfsms = 0
+        tk = None
+        anim = None
+
+        for cn, raw in monos:
+            if cn in ("tk2dSprite", "tk2dSpriteAnimator"):
+                try:
+                    if cn == "tk2dSprite":
+                        sp = read_sprite(raw)
+                        cobj = scene.resolve(sp["collection"], from_file)
+                        if cobj is not None:
+                            tk = (reg.collection_index(cobj), sp)
+                    else:
+                        an = read_animator(raw)
+                        aobj = scene.resolve(an["library"], from_file)
+                        if aobj is not None:
+                            anim = (reg.library_index(aobj), an)
+                except Exception as e:
+                    skipped[cn + " (parse)"] += 1
+                continue
+
+            if cn == "PlayMakerFSM":
+                try:
+                    fsm, used = parse_fsm_component(raw)
+                    if used != len(raw):
+                        skipped["PlayMakerFSM (short)"] += 1
+                        continue
+                    fsm_owner_file[0] = from_file
+                    write_fsm(fsms_buf, fsm)
+                    nfsms += 1
+                except Exception:
+                    skipped["PlayMakerFSM (parse)"] += 1
+                continue
+
+            lay = layout_of(cn)
+            if lay is None:
+                skipped[cn + " (no layout)"] += 1
+                continue
+            try:
+                values, exact = parse_layout(raw, lay)
+            except Exception:
+                exact = False
+                values = None
+            if not exact:
+                # The layout did not land on the end of the buffer, so it is wrong
+                # somewhere and every field after that point is noise. Better no
+                # component than a misconfigured one.
+                skipped[cn + " (inexact)"] += 1
+                continue
+            write_component(comps_buf, cn, lay, values, resolve_ref)
+            ncomps += 1
+
+        if tk is not None or anim is not None:
+            rec["mask"] |= HAS_TK2D
+            rec["tk2d"] = (tk, anim)
+            bstats["tk2d"] += 1
+        if nfsms:
+            rec["mask"] |= HAS_FSM
+            rec["fsms"] = (nfsms, fsms_buf.bytes())
+            bstats["fsms"] += nfsms
+        if ncomps:
+            rec["mask"] |= HAS_COMPS
+            rec["comps"] = (ncomps, comps_buf.bytes())
+            bstats["comps"] += ncomps
+
+    for r in objects:
+        bake_behaviour(r, r.get("monos") or [], lvl)
+
+    # Prefabs a component or an FSM named, and any they name in turn.
+    prefab_bufs = []
+    guard = 0
+    while reg.prefab_queue and guard < 512:
+        guard += 1
+        pname, pfile, pgid = reg.prefab_queue.pop(0)
+        pw = Writer()
+        try:
+            write_prefab(pw, scene, reg, pfile, pgid, bake_behaviour)
+        except Exception as e:
+            import traceback
+            log(f"    ! prefab '{pname}' failed: {e!r}")
+            log("      " + "\n      ".join(traceback.format_exc().splitlines()[-14:]))
+            continue
+        prefab_bufs.append((pname, pw.bytes()))
+
+    log(f"    behaviour: {bstats['comps']} components, {bstats['fsms']} FSMs, "
+        f"{bstats['tk2d']} tk2d, {len(reg.collections)} collections, "
+        f"{len(reg.libraries)} libraries, {len(prefab_bufs)} prefabs")
+    if skipped:
+        for k, n in skipped.most_common(8):
+            log(f"      skipped {n:4} x {k}")
+
     # GameObject PPtrs point at objects that may appear later in the hierarchy, so the
     # door references are resolved once the whole index is built.
     for r in objects:
@@ -697,6 +903,17 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
 
     baker.write_table(w)
 
+    # The behaviour layer's shared tables: sprite collections and animation libraries the
+    # room's objects index into, and the prefabs its FSMs spawn.
+    reg.write_collections(w)
+    reg.write_libraries(w)
+    reg.write_assets(w, resolve_ref)
+    reg.write_clips(w)
+    w.i32(len(prefab_bufs))
+    for pname, pbuf in prefab_bufs:
+        w.string(pname)
+        w.buf += pbuf
+
     w.i32(len(objects))
     for r in objects:
         w.string(r["name"])
@@ -802,6 +1019,9 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
             w.boolean(t["isADoor"]); w.boolean(t["dontWalkOutOfDoor"])
             w.boolean(t["alwaysEnterRight"]); w.boolean(t["alwaysEnterLeft"])
             w.boolean(t["hardLandOnExit"]); w.boolean(t["nonHazardGate"])
+
+        # Last, so the mask bits above keep their existing order on the wire.
+        write_behaviour(w, r)
 
     scene_path = os.path.join(out_dir, f"{name}.scene")
     with open(scene_path, "wb") as f:

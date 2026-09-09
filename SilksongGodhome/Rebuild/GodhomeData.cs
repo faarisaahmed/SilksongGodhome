@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using UnityEngine;
+using SilksongGodhome.Godhome;
 
 namespace SilksongGodhome.Rebuild
 {
@@ -17,7 +18,7 @@ namespace SilksongGodhome.Rebuild
     /// </summary>
     internal static class GodhomeData
     {
-        public const int FormatVersion = 11;
+        public const int FormatVersion = 12;
         private const string Magic = "GGHM";
         private const string ResourcePrefix = "Godhome.";
 
@@ -35,6 +36,13 @@ namespace SilksongGodhome.Rebuild
         public const int HasSeqDoor = 1 << 10;
         public const int HasStatue = 1 << 11;
         public const int HasAudio = 1 << 12;
+
+        // v12: the behaviour layer. Godhome's rooms are not scenery - the objects that
+        // start a fight, end it, knock a boss back and play its death are components and
+        // FSMs on ordinary GameObjects.
+        public const int HasTk2d  = 1 << 13;
+        public const int HasFsm   = 1 << 14;
+        public const int HasComps = 1 << 15;
 
         private static readonly Dictionary<string, BakedScene> Cache = new Dictionary<string, BakedScene>();
         private static HashSet<string> _available;
@@ -134,6 +142,11 @@ namespace SilksongGodhome.Rebuild
             public float EntryDelay;
             public bool IsADoor, DontWalkOutOfDoor, AlwaysEnterRight, AlwaysEnterLeft;
             public bool HardLandOnExit, NonHazardGate;
+
+            // v12 behaviour.
+            public Tk2dDef Tk2d;
+            public FsmData.Fsm[] Fsms;
+            public ComponentDef[] Components;
         }
 
         /// <summary>
@@ -150,12 +163,106 @@ namespace SilksongGodhome.Rebuild
             public AnimationCurve Red, Green, Blue;
         }
 
+        /// <summary>
+        /// One field of a rebuilt component, named rather than positioned.
+        ///
+        /// Hollow Knight's HealthManager and Silksong's are not the same class, so fields
+        /// are matched by name and anything that no longer exists is left alone.
+        /// </summary>
+        public sealed class FieldDef
+        {
+            public string Name;
+            public int Kind;
+            public bool B;
+            public int I;
+            public long L;
+            public float F;
+            public double D;
+            public string S;
+            public Vector4 V;
+
+            /// <summary>A reference: an object in this room, or a baked asset by name.</summary>
+            public int RefObject = -1;
+            public string RefComponent, RefAsset;
+
+            public int ElemKind;
+            public FieldDef[] Items;      // array elements
+            public FieldDef[] Fields;     // inline struct
+        }
+
+        public sealed class ComponentDef
+        {
+            public string TypeName;
+            public FieldDef[] Fields;
+        }
+
+        /// <summary>tk2d sprite and animator, indexing the scene's shared tables.</summary>
+        public sealed class Tk2dDef
+        {
+            public bool HasSprite;
+            public int CollectionIndex, SpriteId, RenderLayer;
+            public Color SpriteColor;
+            public Vector3 SpriteScale;
+
+            public bool HasAnimator;
+            public int LibraryIndex, DefaultClipId;
+            public bool PlayAutomatically;
+        }
+
+        /// <summary>A prefab the room's FSMs spawn, as its own flat node tree.</summary>
+        public sealed class PrefabDef
+        {
+            public string Name;
+            public PrefabNode[] Nodes;
+        }
+
+        public sealed class PrefabNode
+        {
+            public string Name;
+            public int Parent, Layer;
+            public bool Active;
+            public Vector3 Position, Scale;
+            public Quaternion Rotation;
+            public int Mask;
+
+            public bool HasBody;
+            public float Mass, GravityScale, LinearDrag, AngularDrag;
+            public int BodyType, Constraints, CollisionDetection, Interpolate;
+            public BoxDef[] Boxes;
+            public CircleDef[] Circles;
+            public PolyDef[] Polys;
+            public EdgeDef[] Edges;
+
+            public Tk2dDef Tk2d;
+            public FsmData.Fsm[] Fsms;
+            public ComponentDef[] Components;
+        }
+
+        public sealed class CircleDef
+        {
+            public Vector2 Offset;
+            public float Radius;
+            public bool Trigger, Enabled;
+        }
+
         /// <summary>One of Godhome's sounds: mono 16-bit PCM at 22050 Hz.</summary>
         public sealed class ClipDef
         {
             public string Name;
             public int SampleCount;
             public int Rate;
+            /// <summary>0 = 16-bit PCM, 1 = IMA ADPCM (music).</summary>
+            public int Format;
+        }
+
+        /// <summary>
+        /// A ScriptableObject the room refers to - a MusicCue, an audio event table.
+        /// Encoded exactly like a component, because it is the same problem.
+        /// </summary>
+        public sealed class AssetDef
+        {
+            public string Name;
+            public ComponentDef Data;
         }
 
         public sealed class BakedScene
@@ -175,6 +282,12 @@ namespace SilksongGodhome.Rebuild
             public string[] PageNames;
             public SpriteDef[] Sprites;
             public ObjectDef[] Objects;
+
+            // The behaviour layer's shared tables.
+            public BossData.Collection[] Collections;
+            public BossData.Library[] Libraries;
+            public PrefabDef[] Prefabs;
+            public AssetDef[] Assets;
         }
 
         // ------------------------------------------------------------------
@@ -260,8 +373,9 @@ namespace SilksongGodhome.Rebuild
         {
             if (def == null || def.SampleCount <= 0) return null;
 
+            string ext = def.Format == 1 ? ".adpcm" : ".pcm";
             Stream s = Assembly.GetExecutingAssembly()
-                               .GetManifestResourceStream(ResourcePrefix + def.Name + ".pcm");
+                               .GetManifestResourceStream(ResourcePrefix + def.Name + ext);
             if (s == null)
             {
                 Plugin.Log.LogWarning($"Godhome: audio clip '{def.Name}' is missing from the DLL.");
@@ -276,19 +390,80 @@ namespace SilksongGodhome.Rebuild
                 bytes = ms.ToArray();
             }
 
-            int count = Mathf.Min(def.SampleCount, bytes.Length / 2);
-            if (count <= 0) return null;
-
-            var data = new float[count];
-            for (int i = 0; i < count; i++)
+            float[] data;
+            int count;
+            if (def.Format == 1)
             {
-                short v = (short)(bytes[i * 2] | (bytes[i * 2 + 1] << 8));
-                data[i] = v / 32768f;
+                count = Mathf.Min(def.SampleCount, bytes.Length * 2);
+                if (count <= 0) return null;
+                data = DecodeAdpcm(bytes, count);
+            }
+            else
+            {
+                count = Mathf.Min(def.SampleCount, bytes.Length / 2);
+                if (count <= 0) return null;
+                data = new float[count];
+                for (int i = 0; i < count; i++)
+                {
+                    short v = (short)(bytes[i * 2] | (bytes[i * 2 + 1] << 8));
+                    data[i] = v / 32768f;
+                }
             }
 
             AudioClip clip = AudioClip.Create(def.Name, count, 1, def.Rate, false);
             clip.SetData(data, 0);
             return clip;
+        }
+
+        private static readonly int[] AdpcmIndex =
+            { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
+
+        private static readonly int[] AdpcmStep =
+        {
+            7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+            50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+            253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+            1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+            3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+            11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+            32767,
+        };
+
+        /// <summary>
+        /// IMA ADPCM, mirroring tools/adpcm.py step for step.
+        ///
+        /// Godhome's music is minutes long, which is megabytes a track as 16-bit PCM.
+        /// Four bits a sample is a quarter of that, and on orchestral material at 22 kHz
+        /// it is a far better trade than halving the sample rate. Encoder and decoder
+        /// must agree exactly, clamps included, or the track turns to noise - which is
+        /// why both are written the same way round.
+        /// </summary>
+        private static float[] DecodeAdpcm(byte[] data, int count)
+        {
+            var outp = new float[count];
+            int predictor = 0;
+            int index = 0;
+            for (int i = 0; i < count; i++)
+            {
+                byte b = data[i >> 1];
+                int code = ((i & 1) != 0) ? (b >> 4) : (b & 0x0F);
+
+                int step = AdpcmStep[index];
+                int diff = step >> 3;
+                if ((code & 4) != 0) diff += step;
+                if ((code & 2) != 0) diff += step >> 1;
+                if ((code & 1) != 0) diff += step >> 2;
+                predictor += ((code & 8) != 0) ? -diff : diff;
+                if (predictor > 32767) predictor = 32767;
+                else if (predictor < -32768) predictor = -32768;
+
+                index += AdpcmIndex[code];
+                if (index < 0) index = 0;
+                else if (index > 88) index = 88;
+
+                outp[i] = predictor / 32768f;
+            }
+            return outp;
         }
 
         /// <summary>Loads an atlas page PNG into a Texture2D.</summary>
@@ -330,6 +505,201 @@ namespace SilksongGodhome.Rebuild
         }
 
         // ------------------------------------------------------------------
+
+        /// <summary>
+        /// The tk2d / FSM / component sections of one object, in mask-bit order.
+        /// Shared by scene objects and prefab nodes, which carry the same payload.
+        /// </summary>
+        private static void ReadBehaviour(BinaryReader r, int mask, out Tk2dDef tk,
+                                          out FsmData.Fsm[] fsms, out ComponentDef[] comps)
+        {
+            tk = null;
+            fsms = null;
+            comps = null;
+
+            if ((mask & HasTk2d) != 0)
+            {
+                tk = new Tk2dDef();
+                tk.HasSprite = r.ReadBoolean();
+                if (tk.HasSprite)
+                {
+                    tk.CollectionIndex = r.ReadInt32();
+                    tk.SpriteId = r.ReadInt32();
+                    tk.SpriteColor = new Color(r.ReadSingle(), r.ReadSingle(),
+                                               r.ReadSingle(), r.ReadSingle());
+                    tk.SpriteScale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    tk.RenderLayer = r.ReadInt32();
+                }
+                tk.HasAnimator = r.ReadBoolean();
+                if (tk.HasAnimator)
+                {
+                    tk.LibraryIndex = r.ReadInt32();
+                    tk.DefaultClipId = r.ReadInt32();
+                    tk.PlayAutomatically = r.ReadBoolean();
+                }
+            }
+
+            if ((mask & HasFsm) != 0)
+            {
+                fsms = new FsmData.Fsm[r.ReadInt32()];
+                for (int i = 0; i < fsms.Length; i++) fsms[i] = FsmData.ReadFsm(r);
+            }
+
+            if ((mask & HasComps) != 0)
+            {
+                comps = new ComponentDef[r.ReadInt32()];
+                for (int i = 0; i < comps.Length; i++)
+                {
+                    var c = new ComponentDef { TypeName = r.ReadString() };
+                    c.Fields = new FieldDef[r.ReadInt32()];
+                    for (int k = 0; k < c.Fields.Length; k++) c.Fields[k] = ReadField(r);
+                    comps[i] = c;
+                }
+            }
+        }
+
+        // Wire kinds, mirroring compbake.py.
+        private const int KBool = 0, KI32 = 1, KI64 = 2, KF32 = 3, KF64 = 4, KString = 5;
+        private const int KVec2 = 6, KVec3 = 7, KVec4 = 8, KRef = 9, KArray = 10, KInline = 11;
+
+        private static FieldDef ReadField(BinaryReader r)
+        {
+            var f = new FieldDef { Name = r.ReadString(), Kind = r.ReadInt32() };
+            ReadValue(r, f, f.Kind);
+            return f;
+        }
+
+        private static void ReadValue(BinaryReader r, FieldDef f, int kind)
+        {
+            switch (kind)
+            {
+                case KBool: f.B = r.ReadBoolean(); break;
+                case KI32: f.I = r.ReadInt32(); break;
+                case KI64: f.L = r.ReadInt64(); break;
+                case KF32: f.F = r.ReadSingle(); break;
+                case KF64: f.D = r.ReadDouble(); break;
+                case KString: f.S = r.ReadString(); break;
+                case KVec2: f.V = new Vector4(r.ReadSingle(), r.ReadSingle(), 0, 0); break;
+                case KVec3: f.V = new Vector4(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), 0); break;
+                case KVec4:
+                    f.V = new Vector4(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    break;
+                case KRef:
+                    f.RefObject = r.ReadInt32();
+                    f.RefComponent = r.ReadString();
+                    f.RefAsset = r.ReadString();
+                    break;
+                case KArray:
+                {
+                    f.ElemKind = r.ReadInt32();
+                    f.Items = new FieldDef[r.ReadInt32()];
+                    for (int i = 0; i < f.Items.Length; i++)
+                    {
+                        var e = new FieldDef { Kind = f.ElemKind };
+                        ReadValue(r, e, f.ElemKind);
+                        f.Items[i] = e;
+                    }
+                    break;
+                }
+                case KInline:
+                {
+                    f.Fields = new FieldDef[r.ReadInt32()];
+                    for (int i = 0; i < f.Fields.Length; i++) f.Fields[i] = ReadField(r);
+                    break;
+                }
+                default:
+                    throw new InvalidDataException($"unknown field kind {kind}");
+            }
+        }
+
+        private static PolyDef ReadPoly(BinaryReader r)
+        {
+            var def = new PolyDef { Offset = new Vector2(r.ReadSingle(), r.ReadSingle()) };
+            int paths = r.ReadInt32();
+            def.Paths = new Vector2[paths][];
+            for (int p = 0; p < paths; p++)
+            {
+                int n = r.ReadInt32();
+                var pts = new Vector2[n];
+                for (int q = 0; q < n; q++) pts[q] = new Vector2(r.ReadSingle(), r.ReadSingle());
+                def.Paths[p] = pts;
+            }
+            def.Trigger = r.ReadBoolean();
+            def.Enabled = r.ReadBoolean();
+            return def;
+        }
+
+        private static EdgeDef ReadEdge(BinaryReader r)
+        {
+            var def = new EdgeDef { Offset = new Vector2(r.ReadSingle(), r.ReadSingle()) };
+            int n = r.ReadInt32();
+            def.Points = new Vector2[n];
+            for (int p = 0; p < n; p++) def.Points[p] = new Vector2(r.ReadSingle(), r.ReadSingle());
+            def.Trigger = r.ReadBoolean();
+            def.Enabled = r.ReadBoolean();
+            return def;
+        }
+
+        private static PrefabNode ReadPrefabNode(BinaryReader r)
+        {
+            var n = new PrefabNode
+            {
+                Name = r.ReadString(),
+                Parent = r.ReadInt32(),
+                Layer = r.ReadInt32(),
+                Active = r.ReadBoolean(),
+                Position = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+                Rotation = new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+                Scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+            };
+            n.Mask = r.ReadInt32();
+
+            n.HasBody = r.ReadBoolean();
+            if (n.HasBody)
+            {
+                n.Mass = r.ReadSingle();
+                n.GravityScale = r.ReadSingle();
+                n.LinearDrag = r.ReadSingle();
+                n.AngularDrag = r.ReadSingle();
+                n.BodyType = r.ReadInt32();
+                n.Constraints = r.ReadInt32();
+                n.CollisionDetection = r.ReadInt32();
+                n.Interpolate = r.ReadInt32();
+            }
+
+            n.Boxes = new BoxDef[r.ReadInt32()];
+            for (int i = 0; i < n.Boxes.Length; i++)
+            {
+                n.Boxes[i] = new BoxDef
+                {
+                    Offset = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                    Size = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                    Trigger = r.ReadBoolean(),
+                    Enabled = r.ReadBoolean(),
+                };
+            }
+
+            n.Circles = new CircleDef[r.ReadInt32()];
+            for (int i = 0; i < n.Circles.Length; i++)
+            {
+                n.Circles[i] = new CircleDef
+                {
+                    Offset = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                    Radius = r.ReadSingle(),
+                    Trigger = r.ReadBoolean(),
+                    Enabled = r.ReadBoolean(),
+                };
+            }
+
+            n.Polys = new PolyDef[r.ReadInt32()];
+            for (int i = 0; i < n.Polys.Length; i++) n.Polys[i] = ReadPoly(r);
+
+            n.Edges = new EdgeDef[r.ReadInt32()];
+            for (int i = 0; i < n.Edges.Length; i++) n.Edges[i] = ReadEdge(r);
+
+            ReadBehaviour(r, n.Mask, out n.Tk2d, out n.Fsms, out n.Components);
+            return n;
+        }
 
         private static AnimationCurve ReadCurve(BinaryReader r)
         {
@@ -409,6 +779,50 @@ namespace SilksongGodhome.Rebuild
                     Ppu = r.ReadSingle(),
                     Border = new Vector4(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
                 };
+            }
+
+            // The behaviour layer's shared tables: sprite collections and animation
+            // libraries the room's objects index into, then the prefabs its FSMs spawn.
+            scene.Collections = new BossData.Collection[r.ReadInt32()];
+            for (int i = 0; i < scene.Collections.Length; i++)
+                scene.Collections[i] = BossData.ReadCollection(r);
+
+            scene.Libraries = new BossData.Library[r.ReadInt32()];
+            for (int i = 0; i < scene.Libraries.Length; i++)
+                scene.Libraries[i] = BossData.ReadLibrary(r);
+
+            scene.Assets = new AssetDef[r.ReadInt32()];
+            for (int i = 0; i < scene.Assets.Length; i++)
+            {
+                var a = new AssetDef { Name = r.ReadString() };
+                var c = new ComponentDef { TypeName = r.ReadString() };
+                c.Fields = new FieldDef[r.ReadInt32()];
+                for (int k = 0; k < c.Fields.Length; k++) c.Fields[k] = ReadField(r);
+                a.Data = c;
+                scene.Assets[i] = a;
+            }
+
+            int behaviourClips = r.ReadInt32();
+            var extraClips = new List<ClipDef>(scene.Clips);
+            for (int i = 0; i < behaviourClips; i++)
+            {
+                extraClips.Add(new ClipDef
+                {
+                    Name = r.ReadString(),
+                    SampleCount = r.ReadInt32(),
+                    Rate = r.ReadInt32(),
+                    Format = r.ReadInt32(),
+                });
+            }
+            scene.Clips = extraClips.ToArray();
+
+            scene.Prefabs = new PrefabDef[r.ReadInt32()];
+            for (int i = 0; i < scene.Prefabs.Length; i++)
+            {
+                var p = new PrefabDef { Name = r.ReadString() };
+                p.Nodes = new PrefabNode[r.ReadInt32()];
+                for (int k = 0; k < p.Nodes.Length; k++) p.Nodes[k] = ReadPrefabNode(r);
+                scene.Prefabs[i] = p;
             }
 
             int objCount = r.ReadInt32();
@@ -578,6 +992,8 @@ namespace SilksongGodhome.Rebuild
                     o.HardLandOnExit = r.ReadBoolean();
                     o.NonHazardGate = r.ReadBoolean();
                 }
+
+                ReadBehaviour(r, o.Mask, out o.Tk2d, out o.Fsms, out o.Components);
 
                 scene.Objects[i] = o;
             }

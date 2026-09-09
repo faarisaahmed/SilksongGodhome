@@ -372,7 +372,17 @@ namespace SilksongGodhome.Godhome
 
         private static tk2dSpriteCollectionData BuildCollection(BossData.Collection src)
         {
-            if (CollectionCache.TryGetValue(src.Name, out tk2dSpriteCollectionData cached) && cached != null)
+            return BuildCollectionShared(src, CollectionCache);
+        }
+
+        /// <summary>
+        /// Rebuilds one tk2d collection. Shared with the scene path, since an arena's own
+        /// objects draw from the same sheets its bosses do.
+        /// </summary>
+        public static tk2dSpriteCollectionData BuildCollectionShared(
+            BossData.Collection src, Dictionary<string, tk2dSpriteCollectionData> cache)
+        {
+            if (cache.TryGetValue(src.Name, out tk2dSpriteCollectionData cached) && cached != null)
                 return cached;
 
             var pages = new List<Texture>();
@@ -446,7 +456,7 @@ namespace SilksongGodhome.Godhome
             }
             coll.spriteDefinitions = defs;
 
-            CollectionCache[src.Name] = coll;
+            cache[src.Name] = coll;
             Plugin.Log.LogInfo($"Godhome: built collection '{src.Name}' " +
                                $"({defs.Length} sprites, {mats.Count} page(s)).");
             return coll;
@@ -455,7 +465,14 @@ namespace SilksongGodhome.Godhome
         private static tk2dSpriteAnimation BuildLibrary(BossData.Library src,
                                                         tk2dSpriteCollectionData[] colls)
         {
-            if (LibraryCache.TryGetValue(src.Name, out tk2dSpriteAnimation cached) && cached != null)
+            return BuildLibraryShared(src, colls, LibraryCache);
+        }
+
+        public static tk2dSpriteAnimation BuildLibraryShared(
+            BossData.Library src, tk2dSpriteCollectionData[] colls,
+            Dictionary<string, tk2dSpriteAnimation> cache)
+        {
+            if (cache.TryGetValue(src.Name, out tk2dSpriteAnimation cached) && cached != null)
                 return cached;
             if (src.Clips == null || src.Clips.Length == 0) return null;
 
@@ -501,7 +518,7 @@ namespace SilksongGodhome.Godhome
             }
             lib.clips = clips;
 
-            LibraryCache[src.Name] = lib;
+            cache[src.Name] = lib;
             Plugin.Log.LogInfo($"Godhome: built library '{src.Name}' ({clips.Length} clips).");
             return lib;
         }

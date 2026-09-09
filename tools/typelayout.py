@@ -38,6 +38,10 @@ _src_cache = {}
 _layout_cache = {}
 _kind_cache = {}
 _all_types = None
+# Types currently being laid out. A [Serializable] type that reaches itself - directly or
+# through a field - would otherwise recurse until the stack runs out, which is how
+# Journal_Update_Msg killed a whole prefab.
+_inflight = set()
 DEBUG = bool(os.environ.get("LAYOUT_DEBUG"))
 
 
@@ -230,11 +234,13 @@ def kind_of(csharp_type):
     if t in _kind_cache:
         return _kind_cache[t]
     k = _kind_of(t)
-    _kind_cache[t] = k
+    if not _inflight:
+        _kind_cache[t] = k
     return k
 
 
 def _kind_of(t):
+    # Not cached: the answer depends on what is currently in flight.
     t = t.replace("UnityEngine.", "").replace("System.", "").strip()
     if t in PRIMITIVES:
         return PRIMITIVES[t]
@@ -358,10 +364,20 @@ def layout_of(type_name, inline=False, _seen=None):
     key = (type_name, inline)
     if key in _layout_cache:
         return _layout_cache[key]
+    if type_name in _inflight:
+        return None
     _seen = _seen or set()
     if type_name in _seen:
         return None
     _seen = _seen | {type_name}
+    _inflight.add(type_name)
+    try:
+        return _layout_body(type_name, inline, _seen, key)
+    finally:
+        _inflight.discard(type_name)
+
+
+def _layout_body(type_name, inline, _seen, key):
 
     src = source(type_name)
     if src is None:

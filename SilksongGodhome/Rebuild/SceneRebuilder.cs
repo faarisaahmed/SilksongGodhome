@@ -239,14 +239,30 @@ namespace SilksongGodhome.Rebuild
                     $"Godhome: rebuilt '{sceneName}' - {built} objects, " +
                     $"{sprites.Length} sprites, {baked.PageNames.Length} page(s) in {sw.ElapsedMilliseconds} ms.");
 
-                // Put the arena's own bosses back, where Hollow Knight had them.
+                // A room baked with its behaviour layer brings its own everything: the
+                // boss, the BossSceneController beside it, and the Battle Scene FSMs that
+                // start and end the fight. Only fall back to spawning a boss on top when
+                // the room predates that.
                 try
                 {
-                    // Before the bosses, not after: their FSMs read
-                    // BossSceneController.IsBossScene in their very first state, and that
-                    // is what decides whether they fight or stand still.
-                    Godhome.BossSceneHost.Install(root);
-                    BossBuilder.SpawnForScene(sceneName);
+                    if (HasBehaviour(baked))
+                    {
+                        if (BossSceneController.Instance == null)
+                        {
+                            Plugin.Log.LogInfo(
+                                "Godhome: room carries its own behaviour but no " +
+                                "BossSceneController - installing one.");
+                            Godhome.BossSceneHost.Install(root);
+                        }
+                    }
+                    else
+                    {
+                        // Before the bosses, not after: their FSMs read
+                        // BossSceneController.IsBossScene in their very first state, and
+                        // that is what decides whether they fight or stand still.
+                        Godhome.BossSceneHost.Install(root);
+                        BossBuilder.SpawnForScene(sceneName);
+                    }
                 }
                 catch (Exception e)
                 {
@@ -665,13 +681,66 @@ namespace SilksongGodhome.Rebuild
             return sprites;
         }
 
+        // The room being built, so a component field pointing at another object in it can
+        // be resolved. Baked references are indices into this list.
+        private static Transform[] _made = new Transform[0];
+        private static Dictionary<string, GameObject> _prefabs =
+            new Dictionary<string, GameObject>(StringComparer.Ordinal);
+        private static Dictionary<string, AudioClip> _behaviourClips =
+            new Dictionary<string, AudioClip>(StringComparer.Ordinal);
+
+        private static void OnArenaComplete()
+        {
+            if (!PantheonRun.IsActive) return;
+            Plugin.Log.LogInfo("Godhome: arena complete - advancing the run.");
+            PantheonRun.Advance();
+        }
+
+        /// <summary>Whether a baked room carries components and FSMs of its own.</summary>
+        private static bool HasBehaviour(GodhomeData.BakedScene baked)
+        {
+            foreach (GodhomeData.ObjectDef o in baked.Objects)
+            {
+                if ((o.Mask & (GodhomeData.HasFsm | GodhomeData.HasComps)) != 0) return true;
+            }
+            return false;
+        }
+
+        public static GameObject ObjectAt(int index)
+        {
+            if (index < 0 || index >= _made.Length) return null;
+            Transform t = _made[index];
+            return t != null ? t.gameObject : null;
+        }
+
+        public static GameObject PrefabNamed(string name)
+        {
+            return !string.IsNullOrEmpty(name) && _prefabs.TryGetValue(name, out GameObject g)
+                ? g : null;
+        }
+
+        public static AudioClip ClipNamed(string name)
+        {
+            return !string.IsNullOrEmpty(name) && _behaviourClips.TryGetValue(name, out AudioClip c)
+                ? c : null;
+        }
+
         private static int Construct(GodhomeData.BakedScene baked, Sprite[] sprites,
                                      Texture2D[] pages, Transform root)
         {
             var made = new Transform[baked.Objects.Length];
+            _made = made;
             var pendingDoors = new List<GodhomeData.ObjectDef>();
             bool verbose = GodhomeConfig.VerboseRebuildLogging.Value;
             int count = 0;
+
+            // The behaviour layer's shared assets, before any object needs them.
+            Godhome.BehaviourBuilder.BeginScene(baked, _prefabs, _behaviourClips);
+
+            // Components are added in a second pass and their object references in a
+            // third: a field pointing at another object in the room can only be set once
+            // that object exists, and Hollow Knight's are full of forward references.
+            var deferred = new List<ComponentApplier.Pending>();
 
             for (int i = 0; i < baked.Objects.Length; i++)
             {
@@ -706,12 +775,72 @@ namespace SilksongGodhome.Rebuild
                 if ((d.Mask & GodhomeData.HasSimple) != 0) AddSimpleComponents(go, d);
                 if ((d.Mask & GodhomeData.HasTransition) != 0) AddTransitionPoint(go, d, baked.Name);
 
+                if ((d.Mask & GodhomeData.HasTk2d) != 0)
+                    Godhome.BehaviourBuilder.AddTk2d(go, d.Tk2d);
+
                 // Applied last: deactivating early would stop later children from being
                 // parented onto a live object, and AddComponent on an inactive object is
                 // fine but the ordering is easier to reason about this way.
                 if (!d.Active) go.SetActive(false);
 
                 if (verbose) Plugin.Log.LogInfo($"  + {d.Name} (mask {d.Mask})");
+            }
+
+            // Pass two: Hollow Knight's own components, by name.
+            int comps = 0;
+            for (int i = 0; i < baked.Objects.Length; i++)
+            {
+                GodhomeData.ObjectDef d = baked.Objects[i];
+                if ((d.Mask & GodhomeData.HasComps) == 0 || made[i] == null) continue;
+                foreach (GodhomeData.ComponentDef c in d.Components)
+                {
+                    if (ComponentApplier.Apply(made[i].gameObject, c, deferred) != null) comps++;
+                }
+            }
+
+            // Pass three: the references held back until the room existed.
+            ComponentApplier.Resolve(deferred);
+
+            // BossSceneController.Setup() subscribes to its bosses' OnDeath, which is
+            // what ends a Godhome fight. Hollow Knight calls it from Awake, but only when
+            // a SetupEvent is pending; here the controller's `bosses` array is a baked
+            // reference and does not exist until the pass above, so it is called now.
+            BossSceneController bsc = BossSceneController.Instance;
+            if (bsc != null)
+            {
+                try
+                {
+                    typeof(BossSceneController)
+                        .GetMethod("Setup", BindingFlags.NonPublic | BindingFlags.Instance)
+                        ?.Invoke(bsc, null);
+                    // The room's own controller now decides when the fight is over, so
+                    // the Pantheon follows it rather than a key press. This is Hollow
+                    // Knight's own signal: BossSceneController fires it once every boss
+                    // in its list is dead and the hero is still standing.
+                    bsc.OnBossSceneComplete += OnArenaComplete;
+                    Plugin.Log.LogInfo("Godhome: BossSceneController from the room is set up.");
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning("Godhome: BossSceneController.Setup failed: " + e.Message);
+                }
+            }
+
+            // Pass four: behaviour. FSMs last of all, because their first state reads the
+            // components and children the earlier passes created.
+            int fsms = 0;
+            for (int i = 0; i < baked.Objects.Length; i++)
+            {
+                GodhomeData.ObjectDef d = baked.Objects[i];
+                if ((d.Mask & GodhomeData.HasFsm) == 0 || made[i] == null) continue;
+                fsms += Godhome.BehaviourBuilder.AddFsms(made[i].gameObject, d.Fsms);
+            }
+
+            if (comps > 0 || fsms > 0)
+            {
+                Plugin.Log.LogInfo(
+                    $"Godhome: behaviour - {comps} components, {fsms} FSMs, " +
+                    $"{_prefabs.Count} prefabs, {deferred.Count} references resolved.");
             }
 
             UnlockDoors(pendingDoors, made);

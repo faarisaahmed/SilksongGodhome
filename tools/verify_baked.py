@@ -15,7 +15,7 @@ import sys
 
 from ggformat import (MAGIC, FORMAT_VERSION, HAS_SPRITE, HAS_BOX, HAS_EDGE, HAS_POLY,
                       HAS_CAMLOCK, HAS_RESPAWN, HAS_HAZARD,
-                      HAS_TRANSITION, HAS_SIMPLE,
+                      HAS_TRANSITION, HAS_SIMPLE, HAS_TK2D, HAS_FSM, HAS_COMPS,
                       HAS_MESH, HAS_SEQDOOR, HAS_STATUE,
                       HAS_AUDIO)
 
@@ -35,6 +35,8 @@ class Reader:
 
     def i32(self):  return struct.unpack("<i", self.take(4))[0]
     def f32(self):  return struct.unpack("<f", self.take(4))[0]
+    def i64(self):  return struct.unpack("<q", self.take(8))[0]
+    def f64(self):  return struct.unpack("<d", self.take(8))[0]
     def boolean(self): return struct.unpack("<?", self.take(1))[0]
 
     def string(self):
@@ -47,6 +49,209 @@ class Reader:
                 break
             shift += 7
         return self.take(n).decode("utf-8")
+
+
+def read_fsm_blob(r):
+    """Skip one baked FSM. Mirrors FsmData.ReadFsm, which is the point of the exercise."""
+    def named():
+        r.boolean(); r.string(); r.string(); r.boolean(); r.boolean()
+    def F(): named(); r.f32()
+    def I(): named(); r.i32()
+    def B(): named(); r.boolean()
+    def S(): named(); r.string()
+    def V2(): named(); r.f32(); r.f32()
+    def V3(): named(); [r.f32() for _ in range(3)]
+    def V4(): named(); [r.f32() for _ in range(4)]
+    def OBJ(): named(); r.string(); r.string()
+    def GO(): named(); r.string()
+    def EN(): named(); r.string(); r.i32()
+    def ARR():
+        named(); r.i32(); r.string()
+        for _ in range(r.i32()): r.f32()
+        for _ in range(r.i32()): r.i32()
+        for _ in range(r.i32()): r.boolean()
+        for _ in range(r.i32()): r.string()
+        for _ in range(r.i32()): [r.f32() for _ in range(4)]
+    def lst(fn):
+        for _ in range(r.i32()): fn()
+    def strs(): return [r.string() for _ in range(r.i32())]
+    def ints(): return [r.i32() for _ in range(r.i32())]
+    def bools(): return [r.boolean() for _ in range(r.i32())]
+
+    def action_data():
+        names_ = strs(); strs(); bools(); bools(); ints(); ints()
+        r.i32()
+        lst(GO)
+        for _ in range(r.i32()): r.i32(); GO()
+        for _ in range(r.i32()):
+            for _ in range(r.i32()): [r.f32() for _ in range(4)]
+        for _ in range(r.i32()):
+            r.string(); r.string()
+            B(); F(); I(); GO(); OBJ(); S(); V2(); V3(); V4(); V4()
+            OBJ(); OBJ(); V4(); EN(); ARR()
+        r.i32()
+        for _ in range(r.i32()):
+            r.i32(); B(); r.i32(); GO(); S(); B()
+        for _ in range(r.i32()):
+            OBJ(); r.string(); r.string()
+            B(); F(); I(); GO(); S(); V2(); V3(); V4(); V4()
+            OBJ(); OBJ(); OBJ(); V4(); EN(); ARR(); r.boolean()
+        for _ in range(r.i32()): r.i32(); F(); B()
+        lst(S); lst(OBJ)
+        for _ in range(r.i32()):
+            r.string(); r.string(); r.boolean(); r.i32()
+            r.f32(); r.i32(); r.boolean(); r.string()
+            [r.f32() for _ in range(4)]; ARR()
+        for _ in range(r.i32()): ARR()
+        lst(EN); lst(F); lst(I); lst(B); lst(V2); lst(V3); lst(V4); lst(V4); lst(V4)
+        strs()
+        r.take(r.i32())
+        ints(); strs(); ints(); strs()
+        ints(); strs(); ints(); ints()
+        return len(names_)
+
+    r.string(); r.string()
+    lst(F); lst(I); lst(B); lst(S); lst(V2); lst(V3); lst(V4); lst(V4); lst(V4)
+    lst(GO); lst(OBJ)
+    for _ in range(r.i32()): ARR()
+    lst(EN)
+    for _ in range(r.i32()): r.string(); r.boolean(); r.boolean()
+    nstate = r.i32()
+    nact = 0
+    for _ in range(nstate):
+        r.string()
+        for _ in range(r.i32()): r.string(); r.string()
+        nact += action_data()
+    return nstate, nact
+
+
+# Field kinds, mirroring compbake.py.
+K_BOOL, K_I32, K_I64, K_F32, K_F64, K_STRING = 0, 1, 2, 3, 4, 5
+K_VEC2, K_VEC3, K_VEC4, K_REF, K_ARRAY, K_INLINE = 6, 7, 8, 9, 10, 11
+
+
+def read_value(r, kind, stats):
+    if kind == K_BOOL:   r.boolean()
+    elif kind == K_I32:  r.i32()
+    elif kind == K_I64:  r.i64()
+    elif kind == K_F32:  r.f32()
+    elif kind == K_F64:  r.f64()
+    elif kind == K_STRING: r.string()
+    elif kind == K_VEC2: r.f32(); r.f32()
+    elif kind == K_VEC3: [r.f32() for _ in range(3)]
+    elif kind == K_VEC4: [r.f32() for _ in range(4)]
+    elif kind == K_REF:
+        oi = r.i32(); r.string(); asset = r.string()
+        if oi >= 0: stats["ref_obj"] += 1
+        elif asset: stats["ref_asset"] += 1
+    elif kind == K_ARRAY:
+        ek = r.i32()
+        for _ in range(r.i32()): read_value(r, ek, stats)
+    elif kind == K_INLINE:
+        for _ in range(r.i32()):
+            r.string(); read_value(r, r.i32(), stats)
+    else:
+        raise AssertionError(f"unknown field kind {kind}")
+
+
+def read_behaviour(r, mask, stats, ncoll, nlib):
+    """tk2d, FSMs and components for one object or prefab node."""
+    if mask & HAS_TK2D:
+        if r.boolean():
+            ci = r.i32(); r.i32()
+            [r.f32() for _ in range(4)]; [r.f32() for _ in range(3)]; r.i32()
+            assert 0 <= ci < ncoll, f"collection index {ci} of {ncoll}"
+            stats["tk2d_sprite"] += 1
+        if r.boolean():
+            li = r.i32(); r.i32(); r.boolean()
+            assert 0 <= li < nlib, f"library index {li} of {nlib}"
+            stats["tk2d_anim"] += 1
+    if mask & HAS_FSM:
+        for _ in range(r.i32()):
+            ns, na = read_fsm_blob(r)
+            stats["fsm"] += 1
+            stats["fsm_states"] += ns
+            stats["fsm_actions"] += na
+    if mask & HAS_COMPS:
+        for _ in range(r.i32()):
+            r.string()
+            for _ in range(r.i32()):
+                r.string()
+                read_value(r, r.i32(), stats)
+            stats["comp"] += 1
+
+
+def read_physics(r):
+    if r.boolean():
+        [r.f32() for _ in range(4)]; [r.i32() for _ in range(4)]
+    for _ in range(r.i32()):
+        [r.f32() for _ in range(4)]; r.boolean(); r.boolean()
+    for _ in range(r.i32()):
+        r.f32(); r.f32(); r.f32(); r.boolean(); r.boolean()
+    for _ in range(r.i32()):
+        r.f32(); r.f32()
+        for _ in range(r.i32()):
+            for _ in range(r.i32()): r.f32(); r.f32()
+        r.boolean(); r.boolean()
+    for _ in range(r.i32()):
+        r.f32(); r.f32()
+        for _ in range(r.i32()): r.f32(); r.f32()
+        r.boolean(); r.boolean()
+
+
+def read_tables(r, stats):
+    """The behaviour layer's shared tables: collections, libraries, sounds, prefabs."""
+    ncoll = r.i32()
+    coll_defs = []
+    for _ in range(ncoll):
+        r.string()
+        for _ in range(r.i32()): r.string()
+        nd = r.i32()
+        for _ in range(nd):
+            r.string(); r.i32(); r.f32(); r.f32()
+            for comp in (3, 2, 3, 3):
+                for _ in range(r.i32() * comp): r.f32()
+            for _ in range(r.i32()): r.i32()
+        coll_defs.append(nd)
+
+    nlib = r.i32()
+    for _ in range(nlib):
+        r.string()
+        for _ in range(r.i32()):
+            r.string(); r.f32(); r.i32(); r.i32()
+            for _ in range(r.i32()):
+                ci = r.i32(); sid = r.i32()
+                r.boolean(); r.string(); r.i32(); r.f32()
+                assert -1 <= ci < ncoll, f"frame collection {ci} of {ncoll}"
+                if ci >= 0:
+                    assert 0 <= sid < coll_defs[ci], f"frame sprite {sid} of {coll_defs[ci]}"
+
+    # ScriptableObjects - MusicCue and friends - then the sound table.
+    nasset = r.i32()
+    for _ in range(nasset):
+        r.string(); r.string()
+        for _ in range(r.i32()):
+            r.string(); read_value(r, r.i32(), stats)
+        stats["asset"] += 1
+
+    nmusic = 0
+    for _ in range(r.i32()):
+        r.string(); r.i32(); r.i32()
+        if r.i32() == 1:
+            nmusic += 1
+    stats["music"] = nmusic
+
+    nprefab = r.i32()
+    for _ in range(nprefab):
+        r.string()
+        for _ in range(r.i32()):
+            r.string(); r.i32(); r.i32(); r.boolean()
+            [r.f32() for _ in range(3)]; [r.f32() for _ in range(4)]; [r.f32() for _ in range(3)]
+            m = r.i32()
+            read_physics(r)
+            read_behaviour(r, m, stats, ncoll, nlib)
+        stats["prefab"] += 1
+    return ncoll, nlib, nprefab
 
 
 def verify(path):
@@ -70,7 +275,8 @@ def verify(path):
 
     pages = [r.string() for _ in range(r.i32())]
 
-    nsprites = r.i32()
+    nsprites0 = r.i32()
+    nsprites = nsprites0
     sprites = []
     for _ in range(nsprites):
         s = {
@@ -83,9 +289,16 @@ def verify(path):
         }
         sprites.append(s)
 
-    nobj = r.i32()
     stats = {"sprite": 0, "box": 0, "edge": 0, "poly": 0, "inactive": 0,
-             "camlock": 0, "respawn": 0, "hazard": 0, "transition": 0, "seqdoor": 0, "statue": 0, "audio": 0, "mesh": 0, "meshverts": 0}
+             "camlock": 0, "respawn": 0, "hazard": 0, "transition": 0, "seqdoor": 0,
+             "statue": 0, "audio": 0, "mesh": 0, "meshverts": 0,
+             "tk2d_sprite": 0, "tk2d_anim": 0, "fsm": 0, "fsm_states": 0,
+             "fsm_actions": 0, "comp": 0, "prefab": 0, "ref_obj": 0, "ref_asset": 0,
+             "asset": 0, "music": 0}
+
+    ncoll, nlib, nprefab = read_tables(r, stats)
+
+    nobj = r.i32()
     respawn_names = []
     exits = set()
     parents_ok = True
@@ -177,6 +390,8 @@ def verify(path):
             stats["transition"] += 1
             if tgt: exits.add(tgt)
 
+        read_behaviour(r, mask, stats, ncoll, nlib)
+
     leftover = len(data) - r.i
     print(f"{os.path.basename(path)}")
     print(f"  scene name      {name}")
@@ -198,6 +413,15 @@ def verify(path):
     print(f"  meshes          {stats['mesh']} ({stats['meshverts']} verts)")
     print(f"  inactive        {stats['inactive']}")
     print(f"  parent ordering {'OK (parent always precedes child)' if parents_ok else 'BROKEN'}")
+    print(f"  tk2d            {stats['tk2d_sprite']} sprites / {stats['tk2d_anim']} animators "
+          f"on {ncoll} collections, {nlib} libraries")
+    print(f"  components      {stats['comp']}")
+    print(f"  FSMs            {stats['fsm']} ({stats['fsm_states']} states, "
+          f"{stats['fsm_actions']} actions)")
+    print(f"  prefabs         {nprefab}")
+    print(f"  scriptables     {stats['asset']} (MusicCue and friends)")
+    print(f"  music tracks    {stats['music']} (ADPCM)")
+    print(f"  references      {stats['ref_obj']} in-scene, {stats['ref_asset']} baked assets")
     print(f"  trailing bytes  {leftover}")
 
     # Page files must exist next to the .scene, since the csproj globs them in.

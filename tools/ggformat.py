@@ -11,7 +11,7 @@ C# side can use a plain BinaryReader with no custom parsing.
 import struct
 
 MAGIC = b"GGHM"
-FORMAT_VERSION = 11
+FORMAT_VERSION = 12
 
 # Component bitmask stored per object.
 HAS_SPRITE   = 1 << 0
@@ -28,6 +28,13 @@ HAS_STATUE   = 1 << 11  # BossStatue - one Hall of Gods plinth
 HAS_AUDIO    = 1 << 12  # AudioSource - Godhome's ambience and one-shots
 HAS_MESH     = 1 << 9   # MeshFilter + MeshRenderer - the tilemap chunks are Godhome's
                         # actual floors and walls, so without these the level is invisible
+
+# v12: the behaviour layer. Godhome's rooms are not scenery - the objects that start a
+# fight, end it, knock a boss back and play its death are all components and FSMs on
+# ordinary GameObjects, and without them an arena is a photograph of one.
+HAS_TK2D     = 1 << 13  # tk2dSprite / tk2dSpriteAnimator, into the shared tables
+HAS_FSM      = 1 << 14  # PlayMakerFSMs on this object
+HAS_COMPS    = 1 << 15  # any other Hollow Knight component, by name and field
 
 
 class Writer:
