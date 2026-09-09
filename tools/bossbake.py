@@ -22,10 +22,12 @@ from hkassets import HKBuild
 from monoread import script_ptr, HEADER, read_fields
 from tk2dparse import Tk2dReader
 from fsmvalidate import parse_fsm_component
+import fsmbake
 from fsmbake import write_fsm, FSM_MAGIC, FSM_VERSION
+from audiobake import decode_clip
 
 MAGIC = b"GGBS"
-VERSION = 3
+VERSION = 4
 
 HK = os.path.expanduser(
     "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
@@ -72,6 +74,44 @@ def bake(scene_name, boss_name, log=print):
             names[g.path_id] = g.read_typetree().get("m_Name")
         except Exception:
             pass
+
+    # Audio referenced by the boss's FSMs. These are the boss's own sounds - the buzz,
+    # the charge, the slam - and they're the one referenced asset type that transfers
+    # whole, so they're baked and re-linked by name on the other side.
+    audio_seen = {}
+
+    def resolve_audio(ptr):
+        if not ptr or not ptr.get("m_PathID"):
+            return ""
+        key = (ptr.get("m_FileID"), ptr.get("m_PathID"))
+        if key in audio_seen:
+            return audio_seen[key]
+        obj = scene.resolve(ptr, lvl)
+        if obj is None or obj.type.name != "AudioClip":
+            audio_seen[key] = ""
+            return ""
+        try:
+            cname = obj.read_typetree().get("m_Name") or "clip"
+        except Exception:
+            cname = "clip"
+        rname = "audio_" + "".join(c if c.isalnum() or c in "._-" else "_" for c in cname)
+        decoded = decode_clip(obj)
+        if decoded is None:
+            log(f"    ! boss clip '{cname}' could not be decoded")
+            audio_seen[key] = ""
+            return ""
+        pcm, count, rate = decoded
+        apath = os.path.join(OUT, rname + ".pcm")
+        if not os.path.exists(apath):
+            os.makedirs(OUT, exist_ok=True)
+            with open(apath, "wb") as af:
+                af.write(pcm)
+        audio_seen[key] = rname
+        boss_clips[rname] = (count, rate)
+        return rname
+
+    boss_clips = {}
+    fsmbake.ASSET_RESOLVER = resolve_audio
 
     # The boss's own FSMs - its behaviour.
     fsms = []
@@ -325,9 +365,22 @@ def bake(scene_name, boss_name, log=print):
 
     write_node(boss_gid)
 
-    w.i32(len(fsms))
+    # write_fsm resolves audio as it goes, so the clip table is written after it and the
+    # reader seeks back - instead, FSMs are serialised into a scratch writer first.
+    scratch = Writer()
+    scratch.i32(len(fsms))
     for f in fsms:
-        write_fsm(w, f)
+        write_fsm(scratch, f)
+
+    w.i32(len(boss_clips))
+    for rname, (count, rate) in sorted(boss_clips.items()):
+        w.string(rname)
+        w.i32(count)
+        w.i32(rate)
+    if boss_clips:
+        log(f"  audio: {len(boss_clips)} clips referenced by the FSMs")
+
+    w.buf += scratch.bytes()
 
     path = os.path.join(OUT, f"boss_{safe}.boss")
     with open(path, "wb") as f:

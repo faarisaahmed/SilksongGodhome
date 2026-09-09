@@ -24,6 +24,29 @@ namespace SilksongGodhome.Godhome
     {
         private static readonly Type ActionDataType = typeof(HutongGames.PlayMaker.ActionData);
 
+        /// <summary>
+        /// Assets we managed to bake for FSM references, keyed by resource name. Right
+        /// now that's audio: a boss's own buzz, charge and slam, so it sounds like itself.
+        /// </summary>
+        private static Dictionary<string, UnityEngine.Object> _assets =
+            new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+
+        public static void SetAssets(Dictionary<string, UnityEngine.Object> assets)
+        {
+            _assets = assets ?? new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+        }
+
+        private static FsmObject MakeObject(FsmData.Var x)
+        {
+            var o = new FsmObject(x.Name);
+            if (!string.IsNullOrEmpty(x.Resource) &&
+                _assets.TryGetValue(x.Resource, out UnityEngine.Object asset) && asset != null)
+            {
+                o.Value = asset;
+            }
+            return o;
+        }
+
         /// <summary>Attaches every baked FSM to <paramref name="go"/>.</summary>
         public static int Attach(GameObject go, IList<FsmData.Fsm> fsms)
         {
@@ -109,7 +132,7 @@ namespace SilksongGodhome.Godhome
             v.RectVariables = Map(d.Rects, x => new FsmRect(x.Name) { Value = new Rect(x.V.x, x.V.y, x.V.z, x.V.w) });
             v.QuaternionVariables = Map(d.Quaternions, x => new FsmQuaternion(x.Name) { Value = new Quaternion(x.V.x, x.V.y, x.V.z, x.V.w) });
             v.GameObjectVariables = Map(d.GameObjects, x => new FsmGameObject(x.Name));
-            v.ObjectVariables = Map(d.Objects, x => new FsmObject(x.Name));
+            v.ObjectVariables = Map(d.Objects, MakeObject);
             return v;
         }
 
@@ -172,7 +195,7 @@ namespace SilksongGodhome.Godhome
             Set(ad, "layoutOptionParams", NullList<LayoutOption>(d.LayoutOptionCount));
 
             Set(ad, "fsmStringParams", Map(d.Strings, x => new FsmString(x.Name) { Value = x.S }).ToList());
-            Set(ad, "fsmObjectParams", Map(d.Objects, x => new FsmObject(x.Name)).ToList());
+            Set(ad, "fsmObjectParams", Map(d.Objects, MakeObject).ToList());
             Set(ad, "fsmVarParams", NullList<FsmVar>(d.VarCount));
             Set(ad, "fsmArrayParams", NullList<FsmArray>(d.ArrayCount));
             Set(ad, "fsmEnumParams", Map(d.Enums, x => new FsmEnum(x.Name)).ToList());

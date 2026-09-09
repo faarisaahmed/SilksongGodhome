@@ -396,6 +396,20 @@ boss's logic.
 Faking a `BossSceneController` would have been the other route, but its `Awake` pulls on
 sequence loading, which is a lot of machinery to satisfy for one boolean.
 
+### Bosses in their own arenas, with their own sounds
+
+Each baked boss records the Hollow Knight scene it came from, so `BossRegistry` indexes
+them by arena (reading only each file's header) and `SceneRebuilder` puts them back where
+Hollow Knight had them when that arena is rebuilt. The debug key still works for dropping
+one anywhere.
+
+**Sound effects transfer.** A boss's FSM references its clips through `fsmObjectParams`
+with `typeName = "UnityEngine.AudioClip"` - Gruz Mother has four
+(`big_fly_flying`, `big_fly_charge_loop`, `big_fly_wall_hit`, `big_fly_snore_startle`),
+Mato and Oro have thirty each. Those are baked like any other audio and re-linked by name
+when the FSM is rebuilt, so `AudioPlay` actions find a real clip. Everything else a
+Hollow Knight FSM points at - spawned prefabs, mixer snapshots - still can't cross.
+
 ### What a boss still needs
 
 Gruz Mother, fully scoped:

@@ -41,10 +41,24 @@ def _w_vec4(w, v):    _named(w, v); w.vec4(*v["value"])
 def _w_enum(w, v):    _named(w, v); w.string(v["enumName"] or ""); w.i32(v["intValue"])
 
 
+# Set by bossbake: given an FsmObject's PPtr, return the resource name of a baked asset
+# for it, or "" - this is how a boss keeps its own sound effects. AudioClips are the one
+# referenced asset type we can carry across whole.
+ASSET_RESOLVER = None
+
+
 def _w_object(w, v):
-    # The referenced asset lives in Hollow Knight; only the type name is portable.
+    # The referenced asset lives in Hollow Knight, so the pointer itself can't cross.
+    # If we baked the asset, its resource name goes here and the C# side re-links it.
     _named(w, v)
     w.string(v.get("typeName") or "")
+    res = ""
+    if ASSET_RESOLVER is not None:
+        try:
+            res = ASSET_RESOLVER(v.get("value")) or ""
+        except Exception:
+            res = ""
+    w.string(res)
 
 
 def _w_gameobject(w, v):

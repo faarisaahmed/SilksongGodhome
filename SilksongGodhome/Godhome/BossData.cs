@@ -19,7 +19,7 @@ namespace SilksongGodhome.Godhome
     {
         private const string Prefix = "Godhome.";
         private const string Magic = "GGBS";
-        private const int Version = 3;
+        private const int Version = 4;
 
         public sealed class SpriteDef
         {
@@ -89,6 +89,11 @@ namespace SilksongGodhome.Godhome
             public Node[] Children;
         }
 
+        public struct ClipInfo
+        {
+            public int SampleCount, Rate;
+        }
+
         public sealed class Boss
         {
             public string Name;
@@ -98,6 +103,9 @@ namespace SilksongGodhome.Godhome
             public SpriteDef[] Defs;
             public Clip[] Clips;
             public Node Root;
+            /// <summary>Clips the FSMs reference, by resource name.</summary>
+            public System.Collections.Generic.Dictionary<string, ClipInfo> FsmClips =
+                new System.Collections.Generic.Dictionary<string, ClipInfo>();
             public System.Collections.Generic.List<FsmData.Fsm> Fsms =
                 new System.Collections.Generic.List<FsmData.Fsm>();
         }
@@ -178,6 +186,13 @@ namespace SilksongGodhome.Godhome
                     }
 
                     b.Root = ReadNode(r);
+
+                    int nclips = r.ReadInt32();
+                    for (int i = 0; i < nclips; i++)
+                    {
+                        string cn = r.ReadString();
+                        b.FsmClips[cn] = new ClipInfo { SampleCount = r.ReadInt32(), Rate = r.ReadInt32() };
+                    }
 
                     int nf = r.ReadInt32();
                     for (int i = 0; i < nf; i++) b.Fsms.Add(FsmData.ReadFsm(r));

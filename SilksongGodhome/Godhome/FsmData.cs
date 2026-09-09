@@ -28,6 +28,8 @@ namespace SilksongGodhome.Godhome
             public string S;
             public Vector4 V;
             public string TypeName;      // FsmObject / FsmEnum
+            /// <summary>Resource name of a baked asset for this reference, or empty.</summary>
+            public string Resource;
         }
 
         public sealed class ActionData
@@ -124,7 +126,13 @@ namespace SilksongGodhome.Godhome
         private static Var V2(BinaryReader r) { Var v = ReadNamed(r); v.V = new Vector4(r.ReadSingle(), r.ReadSingle(), 0, 0); return v; }
         private static Var V3(BinaryReader r) { Var v = ReadNamed(r); v.V = new Vector4(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), 0); return v; }
         private static Var V4(BinaryReader r) { Var v = ReadNamed(r); v.V = new Vector4(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()); return v; }
-        private static Var Obj(BinaryReader r) { Var v = ReadNamed(r); v.TypeName = r.ReadString(); return v; }
+        private static Var Obj(BinaryReader r)
+        {
+            Var v = ReadNamed(r);
+            v.TypeName = r.ReadString();
+            v.Resource = r.ReadString();
+            return v;
+        }
         private static Var GO(BinaryReader r) { return ReadNamed(r); }
         private static Var En(BinaryReader r) { Var v = ReadNamed(r); v.TypeName = r.ReadString(); v.I = r.ReadInt32(); return v; }
 

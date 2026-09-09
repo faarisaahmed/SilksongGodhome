@@ -20,11 +20,30 @@ namespace SilksongGodhome.Godhome
         private static readonly Dictionary<string, tk2dSpriteAnimation> LibraryCache =
             new Dictionary<string, tk2dSpriteAnimation>(StringComparer.Ordinal);
 
-        /// <summary>Spawns a boss at a position. Returns the GameObject, or null.</summary>
-        public static GameObject Spawn(string bossName, Vector3 position, string clip = null)
+        /// <summary>
+        /// Spawns every boss baked for an arena, each at the position it occupied in
+        /// Hollow Knight.
+        /// </summary>
+        public static int SpawnForScene(string sceneName)
+        {
+            int n = 0;
+            foreach (string name in BossRegistry.ForScene(sceneName))
+            {
+                if (Spawn(name, null) != null) n++;
+            }
+            if (n > 0) Plugin.Log.LogInfo($"Godhome: spawned {n} boss(es) for '{sceneName}'.");
+            return n;
+        }
+
+        /// <summary>
+        /// Spawns a boss. A null position means "where Hollow Knight had it".
+        /// </summary>
+        public static GameObject Spawn(string bossName, Vector3? position, string clip = null)
         {
             BossData.Boss boss = BossData.Load(bossName);
             if (boss == null) return null;
+
+            Vector3 at = position ?? (boss.Root != null ? boss.Root.Position : Vector3.zero);
 
             try
             {
@@ -36,7 +55,7 @@ namespace SilksongGodhome.Godhome
                 BossData.Node root = boss.Root;
 
                 var go = new GameObject("Godhome_" + boss.Name);
-                go.transform.position = position;
+                go.transform.position = at;
                 if (root != null)
                 {
                     go.layer = root.Layer;
@@ -84,6 +103,7 @@ namespace SilksongGodhome.Godhome
                 // first state runs.
                 if (boss.Fsms.Count > 0)
                 {
+                    FsmBuilder.SetAssets(LoadFsmAssets(boss));
                     int built = FsmBuilder.Attach(go, boss.Fsms);
                     Plugin.Log.LogInfo($"Godhome: attached {built}/{boss.Fsms.Count} FSM(s) to '{boss.Name}'.");
 
@@ -92,7 +112,7 @@ namespace SilksongGodhome.Godhome
                     go.AddComponent<BossWaker>();
                 }
 
-                Plugin.Log.LogInfo($"Godhome: spawned '{boss.Name}' at {position}.");
+                Plugin.Log.LogInfo($"Godhome: spawned '{boss.Name}' at {at}.");
                 return go;
             }
             catch (Exception e)
@@ -180,6 +200,35 @@ namespace SilksongGodhome.Godhome
             // Applied last so children are parented onto a live object first. Hollow
             // Knight ships the Hero Damager inactive; its FSM switches it on mid-attack.
             if (!n.Active) go.SetActive(false);
+        }
+
+        private static readonly Dictionary<string, UnityEngine.Object> AssetCache =
+            new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Builds the AudioClips this boss's FSMs reference, so its sound effects survive
+        /// the port. Everything else a Hollow Knight FSM points at - spawned prefabs,
+        /// mixer snapshots - still can't cross.
+        /// </summary>
+        private static Dictionary<string, UnityEngine.Object> LoadFsmAssets(BossData.Boss boss)
+        {
+            var map = new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, BossData.ClipInfo> kv in boss.FsmClips)
+            {
+                if (!AssetCache.TryGetValue(kv.Key, out UnityEngine.Object a) || a == null)
+                {
+                    a = Rebuild.GodhomeData.LoadClip(new Rebuild.GodhomeData.ClipDef
+                    {
+                        Name = kv.Key,
+                        SampleCount = kv.Value.SampleCount,
+                        Rate = kv.Value.Rate,
+                    });
+                    AssetCache[kv.Key] = a;
+                }
+                if (a != null) map[kv.Key] = a;
+            }
+            if (map.Count > 0) Plugin.Log.LogInfo($"Godhome: re-linked {map.Count} sound(s) for '{boss.Name}'.");
+            return map;
         }
 
         private static string PickIdleClip(tk2dSpriteAnimation library)

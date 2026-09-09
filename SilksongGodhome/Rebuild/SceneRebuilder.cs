@@ -239,6 +239,16 @@ namespace SilksongGodhome.Rebuild
                     $"Godhome: rebuilt '{sceneName}' - {built} objects, " +
                     $"{sprites.Length} sprites, {baked.PageNames.Length} page(s) in {sw.ElapsedMilliseconds} ms.");
 
+                // Put the arena's own bosses back, where Hollow Knight had them.
+                try
+                {
+                    BossBuilder.SpawnForScene(sceneName);
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogError($"Godhome: spawning bosses for '{sceneName}' failed: {e}");
+                }
+
                 LogDiagnostics("after rebuild");
                 return true;
             }

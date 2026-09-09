@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verify_baked import Reader
 
 MAGIC = b"GGBS"
-VERSION = 3
+VERSION = 4
 
 
 def verify(path):
@@ -84,7 +84,7 @@ def verify(path):
     def V2(): named(); r.f32(); r.f32()
     def V3(): named(); [r.f32() for _ in range(3)]
     def V4(): named(); [r.f32() for _ in range(4)]
-    def OBJ(): named(); r.string()
+    def OBJ(): named(); r.string(); r.string()   # typeName + baked resource name
     def GO(): named()
     def EN(): named(); r.string(); r.i32()
     def ARR():
@@ -132,6 +132,11 @@ def verify(path):
         ints(); strs(); ints(); ints()
         return names_
 
+    nclips = r.i32()
+    clip_names = []
+    for _ in range(nclips):
+        clip_names.append(r.string()); r.i32(); r.i32()
+
     nfsm = r.i32()
     tot_states = tot_actions = 0
     fsm_names = []
@@ -163,6 +168,7 @@ def verify(path):
     print(f"  hierarchy       {stats['nodes']} objects, {stats['bodies']} rigidbody, "
           f"{stats['boxes']} box / {stats['circles']} circle colliders")
     print(f"  hp / damagers   {stats['hp']} / {stats['damagers']}")
+    print(f"  fsm audio       {nclips} clips {clip_names[:4]}")
     print(f"  FSMs            {nfsm} {fsm_names}")
     print(f"  states/actions  {tot_states} / {tot_actions}")
     print(f"  trailing bytes  {leftover}")
