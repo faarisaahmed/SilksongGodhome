@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verify_baked import Reader
 
 MAGIC = b"GGBS"
-VERSION = 2
+VERSION = 3
 
 
 def verify(path):
@@ -47,6 +47,32 @@ def verify(path):
                 bad_ids += 1
             c["frames"].append(sid)
         clips.append(c)
+
+    # --- hierarchy + components (mirrors BossData.ReadNode) ---
+    stats = {"nodes": 0, "boxes": 0, "circles": 0, "bodies": 0, "damagers": 0, "hp": None}
+
+    def node():
+        stats["nodes"] += 1
+        nm = r.string(); layer = r.i32(); r.boolean()
+        [r.f32() for _ in range(3)]; [r.f32() for _ in range(4)]; [r.f32() for _ in range(3)]
+        if r.boolean():
+            stats["bodies"] += 1
+            [r.f32() for _ in range(4)]; [r.i32() for _ in range(4)]
+        nb = r.i32(); stats["boxes"] += nb
+        for _ in range(nb):
+            [r.f32() for _ in range(4)]; r.boolean(); r.boolean()
+        nc = r.i32(); stats["circles"] += nc
+        for _ in range(nc):
+            r.f32(); r.f32(); r.f32(); r.boolean(); r.boolean()
+        if r.boolean():
+            hp = r.i32()
+            if stats["hp"] is None: stats["hp"] = hp
+        if r.boolean():
+            stats["damagers"] += 1
+            r.i32(); r.i32()
+        for _ in range(r.i32()): node()
+
+    node()
 
     # --- FSM section (mirrors FsmData.cs) ---
     def named():
@@ -134,6 +160,9 @@ def verify(path):
     empty_pos = sum(1 for d in defs if not d["positions"])
     print(f"  sprites w/o geometry {empty_pos}")
     print(f"  frame sprite ids out of range: {bad_ids}")
+    print(f"  hierarchy       {stats['nodes']} objects, {stats['bodies']} rigidbody, "
+          f"{stats['boxes']} box / {stats['circles']} circle colliders")
+    print(f"  hp / damagers   {stats['hp']} / {stats['damagers']}")
     print(f"  FSMs            {nfsm} {fsm_names}")
     print(f"  states/actions  {tot_states} / {tot_actions}")
     print(f"  trailing bytes  {leftover}")

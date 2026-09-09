@@ -19,19 +19,35 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ggformat import Writer
 from hkassets import HKBuild
-from monoread import script_ptr, HEADER
+from monoread import script_ptr, HEADER, read_fields
 from tk2dparse import Tk2dReader
 from fsmvalidate import parse_fsm_component
 from fsmbake import write_fsm, FSM_MAGIC, FSM_VERSION
 
 MAGIC = b"GGBS"
-VERSION = 2
+VERSION = 3
 
 HK = os.path.expanduser(
     "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
     "GOG Games/Hollow Knight/Hollow Knight_Data")
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "SilksongGodhome", "Baked")
+
+
+# HealthManager's serialised head, down to hp. AudioEvent is clip + 3 floats.
+HEALTH_HEAD = [
+    ("audioPlayerPrefab", "pptr"),
+    ("inv_clip", "pptr"), ("inv_pmin", "f32"), ("inv_pmax", "f32"), ("inv_vol", "f32"),
+    ("blockHitPrefab", "pptr"), ("strikeNailPrefab", "pptr"), ("slashImpactPrefab", "pptr"),
+    ("fireballHitPrefab", "pptr"), ("sharpShadowImpactPrefab", "pptr"),
+    ("corpseSplatPrefab", "pptr"),
+    ("dsw_clip", "pptr"), ("dsw_pmin", "f32"), ("dsw_pmax", "f32"), ("dsw_vol", "f32"),
+    ("dmg_clip", "pptr"), ("dmg_pmin", "f32"), ("dmg_pmax", "f32"), ("dmg_vol", "f32"),
+    ("smallGeoPrefab", "pptr"), ("mediumGeoPrefab", "pptr"), ("largeGeoPrefab", "pptr"),
+    ("hp", "i32"),
+]
+
+DAMAGE_HERO = [("damageDealt", "i32"), ("hazardType", "i32")]
 
 
 def class_of(scene, o, lvl):
@@ -183,6 +199,131 @@ def bake(scene_name, boss_name, log=print):
             w.string(fr["eventInfo"] or "")
             w.i32(fr["eventInt"])
             w.f32(fr["eventFloat"])
+
+    # -- hierarchy and components -------------------------------------
+    #
+    # A boss needs more than art: a Rigidbody2D for its FSM's SetVelocity2d actions to
+    # push, its own collider as a hitbox, and the child "Hero Damager" that actually
+    # hurts you (inactive until the FSM turns it on).
+    tr = {}
+    go = {}
+    for o in scene.scene_objects("GameObject"):
+        try:
+            go[o.path_id] = o.read_typetree()
+        except Exception:
+            pass
+    for o in scene.scene_objects("Transform"):
+        try:
+            tr[o.path_id] = o.read_typetree()
+        except Exception:
+            pass
+    g2t = {}
+    for pid, d in tr.items():
+        g2t[(d.get("m_GameObject") or {}).get("m_PathID")] = pid
+
+    boss_gid = None
+    for pid, d in go.items():
+        if d.get("m_Name") == boss_name:
+            boss_gid = pid
+            break
+
+    def components(gpid):
+        out = []
+        for c in (go.get(gpid, {}).get("m_Component") or []):
+            ptr = c.get("component") if isinstance(c, dict) else None
+            o = scene.resolve(ptr, lvl) if ptr else None
+            if o is not None:
+                out.append(o)
+        return out
+
+    def write_node(gpid):
+        d = go[gpid]
+        t = tr.get(g2t.get(gpid)) or {}
+        pos = t.get("m_LocalPosition") or {}
+        rot = t.get("m_LocalRotation") or {}
+        scl = t.get("m_LocalScale") or {}
+
+        w.string(d.get("m_Name") or "")
+        w.i32(int(d.get("m_Layer") or 0))
+        w.boolean(bool(d.get("m_IsActive", True)))
+        w.vec3(pos.get("x", 0.0), pos.get("y", 0.0), pos.get("z", 0.0))
+        w.vec4(rot.get("x", 0.0), rot.get("y", 0.0), rot.get("z", 0.0), rot.get("w", 1.0))
+        w.vec3(scl.get("x", 1.0), scl.get("y", 1.0), scl.get("z", 1.0))
+
+        rb = None
+        boxes = []
+        circles = []
+        health = None
+        damage = None
+        for o in components(gpid):
+            n = o.type.name
+            if n == "Rigidbody2D":
+                rb = o.read_typetree()
+            elif n == "BoxCollider2D":
+                boxes.append(o.read_typetree())
+            elif n == "CircleCollider2D":
+                circles.append(o.read_typetree())
+            elif n == "MonoBehaviour":
+                raw2 = o.get_raw_data()
+                cn = class_of(scene, o, lvl)
+                if cn == "HealthManager":
+                    try:
+                        health = read_fields(raw2, HEALTH_HEAD)["hp"]
+                    except Exception:
+                        health = None
+                elif cn == "DamageHero":
+                    try:
+                        damage = read_fields(raw2, DAMAGE_HERO)
+                    except Exception:
+                        damage = None
+
+        w.boolean(rb is not None)
+        if rb is not None:
+            w.f32(rb.get("m_Mass", 1.0))
+            w.f32(rb.get("m_GravityScale", 1.0))
+            w.f32(rb.get("m_LinearDrag", 0.0))
+            w.f32(rb.get("m_AngularDrag", 0.0))
+            w.i32(int(rb.get("m_BodyType", 0)))
+            w.i32(int(rb.get("m_Constraints", 0)))
+            w.i32(int(rb.get("m_CollisionDetection", 0)))
+            w.i32(int(rb.get("m_Interpolate", 0)))
+
+        w.i32(len(boxes))
+        for bx in boxes:
+            off = bx.get("m_Offset") or {}
+            size = bx.get("m_Size") or {}
+            w.vec2(off.get("x", 0.0), off.get("y", 0.0))
+            w.vec2(size.get("x", 1.0), size.get("y", 1.0))
+            w.boolean(bool(bx.get("m_IsTrigger", False)))
+            w.boolean(bool(bx.get("m_Enabled", True)))
+
+        w.i32(len(circles))
+        for cc in circles:
+            off = cc.get("m_Offset") or {}
+            w.vec2(off.get("x", 0.0), off.get("y", 0.0))
+            w.f32(cc.get("m_Radius", 0.5))
+            w.boolean(bool(cc.get("m_IsTrigger", False)))
+            w.boolean(bool(cc.get("m_Enabled", True)))
+
+        w.boolean(health is not None)
+        if health is not None:
+            w.i32(int(health))
+
+        w.boolean(damage is not None)
+        if damage is not None:
+            w.i32(int(damage["damageDealt"]))
+            w.i32(int(damage["hazardType"]))
+
+        kids = []
+        for c in ((tr.get(g2t.get(gpid)) or {}).get("m_Children") or []):
+            cp = (tr.get(c["m_PathID"]) or {}).get("m_GameObject", {}).get("m_PathID")
+            if cp and cp in go:
+                kids.append(cp)
+        w.i32(len(kids))
+        for k in kids:
+            write_node(k)
+
+    write_node(boss_gid)
 
     w.i32(len(fsms))
     for f in fsms:

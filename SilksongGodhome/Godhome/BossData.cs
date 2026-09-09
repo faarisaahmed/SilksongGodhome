@@ -19,7 +19,7 @@ namespace SilksongGodhome.Godhome
     {
         private const string Prefix = "Godhome.";
         private const string Magic = "GGBS";
-        private const int Version = 2;
+        private const int Version = 3;
 
         public sealed class SpriteDef
         {
@@ -51,6 +51,44 @@ namespace SilksongGodhome.Godhome
             public Frame[] Frames;
         }
 
+        public sealed class BoxDef
+        {
+            public Vector2 Offset, Size;
+            public bool Trigger, Enabled;
+        }
+
+        public sealed class CircleDef
+        {
+            public Vector2 Offset;
+            public float Radius;
+            public bool Trigger, Enabled;
+        }
+
+        /// <summary>One object in the boss's hierarchy, with the parts that make it a fight.</summary>
+        public sealed class Node
+        {
+            public string Name;
+            public int Layer;
+            public bool Active;
+            public Vector3 Position, Scale;
+            public Quaternion Rotation;
+
+            public bool HasBody;
+            public float Mass, GravityScale, LinearDrag, AngularDrag;
+            public int BodyType, Constraints, CollisionDetection, Interpolate;
+
+            public BoxDef[] Boxes;
+            public CircleDef[] Circles;
+
+            public bool HasHealth;
+            public int Hp;
+
+            public bool HasDamage;
+            public int DamageDealt, HazardType;
+
+            public Node[] Children;
+        }
+
         public sealed class Boss
         {
             public string Name;
@@ -59,6 +97,7 @@ namespace SilksongGodhome.Godhome
             public string[] Textures;
             public SpriteDef[] Defs;
             public Clip[] Clips;
+            public Node Root;
             public System.Collections.Generic.List<FsmData.Fsm> Fsms =
                 new System.Collections.Generic.List<FsmData.Fsm>();
         }
@@ -138,6 +177,8 @@ namespace SilksongGodhome.Godhome
                         b.Clips[i] = c;
                     }
 
+                    b.Root = ReadNode(r);
+
                     int nf = r.ReadInt32();
                     for (int i = 0; i < nf; i++) b.Fsms.Add(FsmData.ReadFsm(r));
 
@@ -158,6 +199,66 @@ namespace SilksongGodhome.Godhome
                 Plugin.Log.LogError($"Godhome: baked boss '{bossName}' is unreadable: {e}");
                 return null;
             }
+        }
+
+        private static Node ReadNode(BinaryReader r)
+        {
+            var n = new Node
+            {
+                Name = r.ReadString(),
+                Layer = r.ReadInt32(),
+                Active = r.ReadBoolean(),
+                Position = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+                Rotation = new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+                Scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
+            };
+
+            n.HasBody = r.ReadBoolean();
+            if (n.HasBody)
+            {
+                n.Mass = r.ReadSingle();
+                n.GravityScale = r.ReadSingle();
+                n.LinearDrag = r.ReadSingle();
+                n.AngularDrag = r.ReadSingle();
+                n.BodyType = r.ReadInt32();
+                n.Constraints = r.ReadInt32();
+                n.CollisionDetection = r.ReadInt32();
+                n.Interpolate = r.ReadInt32();
+            }
+
+            n.Boxes = new BoxDef[r.ReadInt32()];
+            for (int i = 0; i < n.Boxes.Length; i++)
+            {
+                n.Boxes[i] = new BoxDef
+                {
+                    Offset = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                    Size = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                    Trigger = r.ReadBoolean(),
+                    Enabled = r.ReadBoolean(),
+                };
+            }
+
+            n.Circles = new CircleDef[r.ReadInt32()];
+            for (int i = 0; i < n.Circles.Length; i++)
+            {
+                n.Circles[i] = new CircleDef
+                {
+                    Offset = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                    Radius = r.ReadSingle(),
+                    Trigger = r.ReadBoolean(),
+                    Enabled = r.ReadBoolean(),
+                };
+            }
+
+            n.HasHealth = r.ReadBoolean();
+            if (n.HasHealth) n.Hp = r.ReadInt32();
+
+            n.HasDamage = r.ReadBoolean();
+            if (n.HasDamage) { n.DamageDealt = r.ReadInt32(); n.HazardType = r.ReadInt32(); }
+
+            n.Children = new Node[r.ReadInt32()];
+            for (int i = 0; i < n.Children.Length; i++) n.Children[i] = ReadNode(r);
+            return n;
         }
 
         public static string Sanitize(string n)

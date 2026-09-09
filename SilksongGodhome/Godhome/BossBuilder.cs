@@ -33,8 +33,16 @@ namespace SilksongGodhome.Godhome
 
                 tk2dSpriteAnimation library = BuildLibrary(boss, collection);
 
+                BossData.Node root = boss.Root;
+
                 var go = new GameObject("Godhome_" + boss.Name);
                 go.transform.position = position;
+                if (root != null)
+                {
+                    go.layer = root.Layer;
+                    go.transform.localScale = root.Scale;
+                    go.transform.localRotation = root.Rotation;
+                }
 
                 // AddComponent(go, collection, spriteId) is tk2d's own entry point; it
                 // wires the mesh, material and bounds the way the engine expects.
@@ -64,12 +72,24 @@ namespace SilksongGodhome.Godhome
                     }
                 }
 
+                // Physics, hitbox and children before behaviour: the FSM's very first
+                // state pushes velocity and activates the damager, so those have to exist.
+                if (root != null)
+                {
+                    ApplyPhysics(go, root);
+                    foreach (BossData.Node child in root.Children) BuildChild(go.transform, child);
+                }
+
                 // Behaviour last, so the animator and sprite already exist when the FSM's
                 // first state runs.
                 if (boss.Fsms.Count > 0)
                 {
                     int built = FsmBuilder.Attach(go, boss.Fsms);
                     Plugin.Log.LogInfo($"Godhome: attached {built}/{boss.Fsms.Count} FSM(s) to '{boss.Name}'.");
+
+                    // The arena normally supplies the events that start a fight; a
+                    // spawned boss has no arena, so BossWaker sends them instead.
+                    go.AddComponent<BossWaker>();
                 }
 
                 Plugin.Log.LogInfo($"Godhome: spawned '{boss.Name}' at {position}.");
@@ -80,6 +100,86 @@ namespace SilksongGodhome.Godhome
                 Plugin.Log.LogError($"Godhome: couldn't spawn '{bossName}': {e}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Rigidbody, colliders, health and damage - the difference between a picture of
+        /// a boss and an enemy. Values are Hollow Knight's own: Gruz Mother is a dynamic
+        /// body with zero gravity and frozen rotation, a 3.52 x 1.52 body hitbox, and a
+        /// separate trigger on a child that deals the contact damage.
+        /// </summary>
+        private static void ApplyPhysics(GameObject go, BossData.Node n)
+        {
+            if (n.HasBody)
+            {
+                var rb = go.AddComponent<Rigidbody2D>();
+                rb.mass = n.Mass;
+                rb.gravityScale = n.GravityScale;
+                rb.linearDamping = n.LinearDrag;
+                rb.angularDamping = n.AngularDrag;
+                rb.bodyType = (RigidbodyType2D)n.BodyType;
+                rb.constraints = (RigidbodyConstraints2D)n.Constraints;
+                rb.collisionDetectionMode = (CollisionDetectionMode2D)n.CollisionDetection;
+                rb.interpolation = (RigidbodyInterpolation2D)n.Interpolate;
+            }
+
+            foreach (BossData.BoxDef b in n.Boxes)
+            {
+                var c = go.AddComponent<BoxCollider2D>();
+                c.offset = b.Offset;
+                c.size = b.Size;
+                c.isTrigger = b.Trigger;
+                c.enabled = b.Enabled;
+            }
+
+            foreach (BossData.CircleDef cd in n.Circles)
+            {
+                var c = go.AddComponent<CircleCollider2D>();
+                c.offset = cd.Offset;
+                c.radius = cd.Radius;
+                c.isTrigger = cd.Trigger;
+                c.enabled = cd.Enabled;
+            }
+
+            if (n.HasHealth)
+            {
+                var hm = go.AddComponent<HealthManager>();
+                ComponentInitSafe(hm);
+                hm.hp = n.Hp;
+            }
+
+            if (n.HasDamage)
+            {
+                var dh = go.AddComponent<DamageHero>();
+                ComponentInitSafe(dh);
+                dh.damageDealt = n.DamageDealt;
+                dh.hazardType = (GlobalEnums.HazardType)n.HazardType;
+            }
+        }
+
+        private static void ComponentInitSafe(Component c)
+        {
+            // Same trap as everywhere else: AddComponent leaves [Serializable] fields and
+            // arrays null, and this game's code rarely checks.
+            Rebuild.ComponentInit.FillNulls(c);
+        }
+
+        private static void BuildChild(Transform parent, BossData.Node n)
+        {
+            var go = new GameObject(n.Name);
+            go.transform.SetParent(parent, false);
+            go.layer = n.Layer;
+            go.transform.localPosition = n.Position;
+            go.transform.localRotation = n.Rotation;
+            go.transform.localScale = n.Scale;
+
+            ApplyPhysics(go, n);
+
+            foreach (BossData.Node c in n.Children) BuildChild(go.transform, c);
+
+            // Applied last so children are parented onto a live object first. Hollow
+            // Knight ships the Hero Damager inactive; its FSM switches it on mid-attack.
+            if (!n.Active) go.SetActive(false);
         }
 
         private static string PickIdleClip(tk2dSpriteAnimation library)

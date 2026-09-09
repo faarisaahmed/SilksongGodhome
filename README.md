@@ -364,6 +364,38 @@ between Hollow Knight's PlayMaker 1.9.0 and Silksong's 1.9.9. So the parsed arra
 handed back to Silksong's own `ActionData`, and `ActionData.LoadActions` builds the live
 action instances - we never have to understand what any individual action does.
 
+### Making a boss fight
+
+Art and FSMs aren't enough - a boss also needs the parts that make it an enemy, and those
+are baked from Hollow Knight's own values rather than guessed. Gruz Mother:
+
+| | |
+| --- | --- |
+| Rigidbody2D | dynamic, gravityScale 0, FreezeRotation - her FSM drives movement entirely through SetVelocity2d |
+| Body hitbox | BoxCollider2D 3.52 x 1.52, offset (0.148, -0.805), layer 11 (Enemies) |
+| Contact damage | a child `Hero Damager`, trigger collider 2.03 x 1.5, `DamageHero(1, hazardType 1)` - and **inactive by default**, because her FSM switches it on mid-attack |
+| Health | `HealthManager.hp = 650` (Godhome tier) |
+
+The physics layers line up between the games (8 Terrain, 9 Player, 11 Enemies, 17 Attack,
+20 Hero Box), so layer numbers transfer directly.
+
+**Waking her up.** `Big Fly Control` starts in Init, which runs `GGCheckIfBossScene`:
+
+```
+GG BOSS  -> GG Boss Wake -> Wake -> Fly     (in a Godhome arena)
+FINISHED -> Invincible                      (everywhere else)
+```
+
+and from Invincible the normal-game route is
+`HERO ENTER -> Sleep -> TAKE DAMAGE -> Wake Sound -> Wake -> Fly`, where HERO ENTER comes
+from the arena's Battle Range trigger. A boss dropped in by the debug key has no arena, so
+`BossWaker` sends those same events in the same order and stops as soon as the FSM leaves
+its idle states. It supplies the inputs the scene normally would; it doesn't override the
+boss's logic.
+
+Faking a `BossSceneController` would have been the other route, but its `Awake` pulls on
+sequence loading, which is a lot of machinery to satisfy for one boolean.
+
 ### What a boss still needs
 
 Gruz Mother, fully scoped:
