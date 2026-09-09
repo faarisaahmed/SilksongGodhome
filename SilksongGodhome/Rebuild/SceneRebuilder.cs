@@ -775,6 +775,7 @@ namespace SilksongGodhome.Rebuild
                 if ((d.Mask & GodhomeData.HasSimple) != 0) AddSimpleComponents(go, d);
                 if ((d.Mask & GodhomeData.HasTransition) != 0) AddTransitionPoint(go, d, baked.Name);
 
+                if ((d.Mask & GodhomeData.HasPhys) != 0) AddPhysics(go, d);
                 if ((d.Mask & GodhomeData.HasTk2d) != 0)
                     Godhome.BehaviourBuilder.AddTk2d(go, d.Tk2d);
 
@@ -846,6 +847,35 @@ namespace SilksongGodhome.Rebuild
             UnlockDoors(pendingDoors, made);
 
             return count;
+        }
+
+        /// <summary>
+        /// A body and its round hitboxes. Without the Rigidbody2D a boss is scenery:
+        /// every SetVelocity2d in its FSM pushes one, and Recoil needs one to knock back.
+        /// </summary>
+        private static void AddPhysics(GameObject go, GodhomeData.ObjectDef d)
+        {
+            if (d.HasBody)
+            {
+                var rb = go.AddComponent<Rigidbody2D>();
+                rb.mass = d.Mass;
+                rb.gravityScale = d.GravityScale;
+                rb.linearDamping = d.LinearDrag;
+                rb.angularDamping = d.AngularDrag;
+                rb.bodyType = (RigidbodyType2D)d.BodyType;
+                rb.constraints = (RigidbodyConstraints2D)d.Constraints;
+                rb.collisionDetectionMode = (CollisionDetectionMode2D)d.CollisionDetection;
+                rb.interpolation = (RigidbodyInterpolation2D)d.Interpolate;
+            }
+
+            foreach (GodhomeData.CircleDef c in d.Circles ?? new GodhomeData.CircleDef[0])
+            {
+                var cc = go.AddComponent<CircleCollider2D>();
+                cc.offset = c.Offset;
+                cc.radius = c.Radius;
+                cc.isTrigger = c.Trigger;
+                cc.enabled = c.Enabled;
+            }
         }
 
         private static void AddSprite(GameObject go, GodhomeData.ObjectDef d, Sprite[] sprites,

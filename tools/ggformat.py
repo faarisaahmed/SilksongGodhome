@@ -11,6 +11,33 @@ C# side can use a plain BinaryReader with no custom parsing.
 import struct
 
 MAGIC = b"GGHM"
+
+# A deflate wrapper around the above. The behaviour layer is mostly PlayMaker action
+# names and strings, which repeat heavily: a baked room compresses to about 15% of its
+# size, and across the seventeen rooms that is forty megabytes off the DLL.
+ZMAGIC = b"GGHZ"
+
+
+def compress(raw):
+    """ZMAGIC + uncompressed length + raw deflate, which is what DeflateStream reads."""
+    import struct as _s
+    import zlib
+    co = zlib.compressobj(9, zlib.DEFLATED, -15)
+    body = co.compress(raw) + co.flush()
+    return ZMAGIC + _s.pack("<i", len(raw)) + body
+
+
+def decompress(data):
+    """Undo compress(), or return the data unchanged if it was never compressed."""
+    import struct as _s
+    import zlib
+    if not data.startswith(ZMAGIC):
+        return data
+    n = _s.unpack_from("<i", data, 4)[0]
+    out = zlib.decompress(data[8:], -15)
+    if len(out) != n:
+        raise ValueError(f"scene inflated to {len(out)}, header says {n}")
+    return out
 FORMAT_VERSION = 12
 
 # Component bitmask stored per object.
@@ -35,6 +62,8 @@ HAS_MESH     = 1 << 9   # MeshFilter + MeshRenderer - the tilemap chunks are God
 HAS_TK2D     = 1 << 13  # tk2dSprite / tk2dSpriteAnimator, into the shared tables
 HAS_FSM      = 1 << 14  # PlayMakerFSMs on this object
 HAS_COMPS    = 1 << 15  # any other Hollow Knight component, by name and field
+HAS_PHYS     = 1 << 16  # Rigidbody2D and CircleCollider2D. Without a body a boss cannot
+                        # move at all: every SetVelocity2d in its FSM pushes one.
 
 
 class Writer:

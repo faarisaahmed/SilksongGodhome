@@ -213,10 +213,16 @@ namespace SilksongGodhome.Godhome
                 animator.Library = library;
                 stats.Animators++;
 
-                // A clip name is only honoured on the root - it is the caller asking for a
-                // particular pose. Parts pick their own resting clip.
-                string want = clip;
-                if (string.IsNullOrEmpty(want)) want = PickIdleClip(library, n.DefaultClipId);
+                animator.DefaultClipId = n.DefaultClipId;
+                animator.playAutomatically = n.PlayAutomatically;
+
+                // Only the root is posed. Forcing a clip on every part is what put Dung
+                // Defender's effects on screen: an effect object sits on a deliberately
+                // blank sprite until its FSM fires, and playing "the first clip that
+                // looks idle" on it draws a full-size dung ball across the arena instead.
+                string want = isRoot ? clip : null;
+                if (isRoot && string.IsNullOrEmpty(want))
+                    want = PickIdleClip(library, n.DefaultClipId);
                 if (!string.IsNullOrEmpty(want)) animator.Play(want);
             }
 

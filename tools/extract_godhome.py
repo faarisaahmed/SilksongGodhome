@@ -28,7 +28,7 @@ from ggformat import (Writer, MAGIC, FORMAT_VERSION,
                       HAS_SPRITE, HAS_BOX, HAS_EDGE, HAS_POLY,
                       HAS_CAMLOCK, HAS_RESPAWN, HAS_HAZARD, HAS_TRANSITION,
                       HAS_SIMPLE, HAS_MESH, HAS_SEQDOOR, HAS_STATUE, HAS_AUDIO,
-                      HAS_TK2D, HAS_FSM, HAS_COMPS)
+                      HAS_TK2D, HAS_FSM, HAS_COMPS, HAS_PHYS)
 from assetreg import AssetRegistry
 from typelayout import layout_of
 from layoutread import parse as parse_layout
@@ -161,7 +161,8 @@ def collect_components(scene, go_ptr, from_file):
             continue
         name = obj.type.name
         if name in ("SpriteRenderer", "BoxCollider2D", "EdgeCollider2D", "PolygonCollider2D",
-                    "MeshFilter", "MeshRenderer", "AudioSource"):
+                    "MeshFilter", "MeshRenderer", "AudioSource",
+                    "Rigidbody2D", "CircleCollider2D"):
             # A list, not a single value: Hollow Knight's tilemap chunks carry several
             # EdgeCollider2Ds on one GameObject (Chunk 1 4 has four), and keying by type
             # name alone silently kept one and dropped the rest - which is most of
@@ -582,6 +583,15 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
                 }
                 counts["audio"] += 1
 
+        # A body and its round hitboxes. Boxes, edges and polygons have their own mask
+        # bits already; these two had nowhere to go, and a boss without a Rigidbody2D
+        # cannot move - every SetVelocity2d in its FSM pushes one.
+        rbs = comps.get("Rigidbody2D") or []
+        circles = comps.get("CircleCollider2D") or []
+        if rbs or circles:
+            rec["mask"] |= HAS_PHYS
+            rec["phys"] = (rbs[0] if rbs else None, circles)
+
         tp = monos.get("TransitionPoint")
         if tp is not None:
             try:
@@ -611,11 +621,19 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
     reg = AssetRegistry(scene, out_dir, log)
     fsm_owner_file = [lvl]
 
-    def resolve_ref(ptr):
-        """(object index, component type, baked resource name) for a Hollow Knight PPtr."""
+    def resolve_ref(ptr, from_file=None):
+        """
+        (object index, component type, baked resource name) for a Hollow Knight PPtr.
+
+        `from_file` is the assets file the pointer was read out of, because a PPtr's
+        m_FileID indexes that file's own externals table. It defaults to the level, which
+        is right for a component on a scene object and wrong for one inside a prefab or a
+        ScriptableObject.
+        """
+        src = from_file or lvl
         if not ptr or not ptr.get("m_PathID"):
             return -1, "", ""
-        obj = scene.resolve(ptr, lvl)
+        obj = scene.resolve(ptr, src)
         if obj is None:
             return -1, "", ""
 
@@ -623,16 +641,16 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
         if tname == "GameObject":
             if scene.file_of(obj) == lvl:
                 return go_to_obj.get(obj.path_id, -1), "", ""
-            return -1, "", reg.prefab_name(ptr, lvl)
+            return -1, "", reg.prefab_name(ptr, src)
 
         if tname == "AudioClip":
-            return -1, "", reg.audio_name(ptr, lvl)
+            return -1, "", reg.audio_name(ptr, src)
 
         # A ScriptableObject - a MusicCue, an audio event table, a boss scene list. These
         # are what Hollow Knight's own code reaches for, so they are baked and rebuilt
         # rather than dropped.
         if tname == "MonoBehaviour" and scene.file_of(obj) != lvl:
-            so = reg.scriptable_name(ptr, lvl)
+            so = reg.scriptable_name(ptr, src)
             if so:
                 return -1, "", so
 
@@ -745,7 +763,8 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
                 # component than a misconfigured one.
                 skipped[cn + " (inexact)"] += 1
                 continue
-            write_component(comps_buf, cn, lay, values, resolve_ref)
+            write_component(comps_buf, cn, lay, values,
+                            lambda p, f=from_file: resolve_ref(p, f))
             ncomps += 1
 
         if tk is not None or anim is not None:
@@ -1020,12 +1039,36 @@ def bake_scene(build, name, out_dir, verbose=False, no_repack=False):
             w.boolean(t["alwaysEnterRight"]); w.boolean(t["alwaysEnterLeft"])
             w.boolean(t["hardLandOnExit"]); w.boolean(t["nonHazardGate"])
 
+        if r["mask"] & HAS_PHYS:
+            rb, circles = r["phys"]
+            w.boolean(rb is not None)
+            if rb is not None:
+                w.f32(rb.get("m_Mass", 1.0))
+                w.f32(rb.get("m_GravityScale", 1.0))
+                w.f32(rb.get("m_LinearDrag", 0.0))
+                w.f32(rb.get("m_AngularDrag", 0.0))
+                w.i32(int(rb.get("m_BodyType", 0)))
+                w.i32(int(rb.get("m_Constraints", 0)))
+                w.i32(int(rb.get("m_CollisionDetection", 0)))
+                w.i32(int(rb.get("m_Interpolate", 0)))
+            w.i32(len(circles))
+            for c in circles:
+                off = c.get("m_Offset") or {}
+                w.vec2(off.get("x", 0.0), off.get("y", 0.0))
+                w.f32(c.get("m_Radius", 0.5))
+                w.boolean(bool(c.get("m_IsTrigger", False)))
+                w.boolean(bool(c.get("m_Enabled", True)))
+
         # Last, so the mask bits above keep their existing order on the wire.
         write_behaviour(w, r)
 
     scene_path = os.path.join(out_dir, f"{name}.scene")
+    from ggformat import compress
+    raw = w.bytes()
+    packed = compress(raw)
     with open(scene_path, "wb") as f:
-        f.write(w.bytes())
+        f.write(packed)
+    log(f"    packed {len(raw) // 1024} KB -> {len(packed) // 1024} KB")
 
     # Clip files are named after the clip, so one shared by several scenes is written once.
     audio_bytes = 0

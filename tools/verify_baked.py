@@ -13,9 +13,9 @@ import os
 import struct
 import sys
 
-from ggformat import (MAGIC, FORMAT_VERSION, HAS_SPRITE, HAS_BOX, HAS_EDGE, HAS_POLY,
+from ggformat import (MAGIC, FORMAT_VERSION, decompress, HAS_SPRITE, HAS_BOX, HAS_EDGE, HAS_POLY,
                       HAS_CAMLOCK, HAS_RESPAWN, HAS_HAZARD,
-                      HAS_TRANSITION, HAS_SIMPLE, HAS_TK2D, HAS_FSM, HAS_COMPS,
+                      HAS_TRANSITION, HAS_SIMPLE, HAS_TK2D, HAS_FSM, HAS_COMPS, HAS_PHYS,
                       HAS_MESH, HAS_SEQDOOR, HAS_STATUE,
                       HAS_AUDIO)
 
@@ -255,7 +255,8 @@ def read_tables(r, stats):
 
 
 def verify(path):
-    data = open(path, "rb").read()
+    on_disk = open(path, "rb").read()
+    data = decompress(on_disk)
     r = Reader(data)
 
     magic = r.take(4)
@@ -294,7 +295,7 @@ def verify(path):
              "statue": 0, "audio": 0, "mesh": 0, "meshverts": 0,
              "tk2d_sprite": 0, "tk2d_anim": 0, "fsm": 0, "fsm_states": 0,
              "fsm_actions": 0, "comp": 0, "prefab": 0, "ref_obj": 0, "ref_asset": 0,
-             "asset": 0, "music": 0}
+             "asset": 0, "music": 0, "body": 0, "circle": 0}
 
     ncoll, nlib, nprefab = read_tables(r, stats)
 
@@ -390,10 +391,20 @@ def verify(path):
             stats["transition"] += 1
             if tgt: exits.add(tgt)
 
+        if mask & HAS_PHYS:
+            if r.boolean():
+                [r.f32() for _ in range(4)]; [r.i32() for _ in range(4)]
+                stats["body"] += 1
+            for _ in range(r.i32()):
+                r.f32(); r.f32(); r.f32(); r.boolean(); r.boolean()
+                stats["circle"] += 1
+
         read_behaviour(r, mask, stats, ncoll, nlib)
 
     leftover = len(data) - r.i
     print(f"{os.path.basename(path)}")
+    print(f"  on disk         {len(on_disk) // 1024} KB "
+          f"({'deflated from ' + str(len(data) // 1024) + ' KB' if len(on_disk) != len(data) else 'uncompressed'})")
     print(f"  scene name      {name}")
     print(f"  format version  {version}")
     print(f"  scene bounds    {bounds[0]:.0f} x {bounds[1]:.0f} world units")
@@ -402,7 +413,9 @@ def verify(path):
     print(f"  sprites         {nsprites}")
     print(f"  objects         {nobj}")
     print(f"  with sprite     {stats['sprite']}")
-    print(f"  colliders       box {stats['box']} / edge {stats['edge']} / poly {stats['poly']}")
+    print(f"  colliders       box {stats['box']} / edge {stats['edge']} / poly {stats['poly']}"
+          f" / circle {stats['circle']}")
+    print(f"  rigidbodies     {stats['body']}")
     print(f"  camera locks    {stats['camlock']}")
     print(f"  respawn markers {stats['respawn']}  {respawn_names}")
     print(f"  hazard markers  {stats['hazard']}")

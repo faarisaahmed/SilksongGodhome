@@ -359,17 +359,23 @@ class AssetRegistry:
 
     def write_assets(self, w, resolve_ref):
         """
-        The ScriptableObject table. Written last, because an asset's own fields can name
-        further assets and the list grows while it is being serialised.
+        The ScriptableObject table.
+
+        Serialised last, because an asset's fields can name further assets and the list
+        grows while it is being written. `resolve_ref(ptr, from_file)` takes the file the
+        asset came from: a MusicCue lives in a shared assets file, and resolving its clip
+        pointers against the level's externals table finds the wrong objects or none -
+        which is exactly why the music was arriving silent.
         """
         from compbake import write_component
+        from ggformat import Writer
+
         i = 0
         bufs = []
         while i < len(self.assets):
             name, cn, lay, values, afile = self.assets[i]
-            from ggformat import Writer
             aw = Writer()
-            write_component(aw, cn, lay, values, resolve_ref)
+            write_component(aw, cn, lay, values, lambda p, f=afile: resolve_ref(p, f))
             bufs.append((name, aw.bytes()))
             i += 1
         w.i32(len(bufs))

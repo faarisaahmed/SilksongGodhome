@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Reflection;
 using UnityEngine;
 using SilksongGodhome.Godhome;
@@ -20,6 +21,14 @@ namespace SilksongGodhome.Rebuild
     {
         public const int FormatVersion = 12;
         private const string Magic = "GGHM";
+
+        /// <summary>
+        /// A deflate wrapper around a baked room. The behaviour layer is mostly PlayMaker
+        /// action names and strings, which repeat heavily - a room compresses to about
+        /// 15% of its size, and across the seventeen rooms that is forty megabytes off
+        /// the DLL.
+        /// </summary>
+        private const string ZMagic = "GGHZ";
         private const string ResourcePrefix = "Godhome.";
 
         // Component bits, mirroring ggformat.py.
@@ -43,6 +52,8 @@ namespace SilksongGodhome.Rebuild
         public const int HasTk2d  = 1 << 13;
         public const int HasFsm   = 1 << 14;
         public const int HasComps = 1 << 15;
+        /// <summary>Rigidbody2D and CircleCollider2D. A boss without a body cannot move.</summary>
+        public const int HasPhys  = 1 << 16;
 
         private static readonly Dictionary<string, BakedScene> Cache = new Dictionary<string, BakedScene>();
         private static HashSet<string> _available;
@@ -142,6 +153,14 @@ namespace SilksongGodhome.Rebuild
             public float EntryDelay;
             public bool IsADoor, DontWalkOutOfDoor, AlwaysEnterRight, AlwaysEnterLeft;
             public bool HardLandOnExit, NonHazardGate;
+
+            // Rigidbody2D + CircleCollider2D. Boxes, edges and polygons have their own
+            // mask bits; these two had nowhere to go, and every SetVelocity2d in a
+            // boss's FSM pushes a Rigidbody2D.
+            public bool HasBody;
+            public float Mass, GravityScale, LinearDrag, AngularDrag;
+            public int BodyType, Constraints, CollisionDetection, Interpolate;
+            public CircleDef[] Circles;
 
             // v12 behaviour.
             public Tk2dDef Tk2d;
@@ -349,7 +368,8 @@ namespace SilksongGodhome.Rebuild
             try
             {
                 using (s)
-                using (var r = new BinaryReader(s))
+                using (Stream body = Inflate(s))
+                using (var r = new BinaryReader(body))
                 {
                     BakedScene scene = Read(r, name);
                     Cache[name] = scene;
@@ -361,6 +381,42 @@ namespace SilksongGodhome.Rebuild
                 Plugin.Log.LogError($"Godhome: baked data for '{name}' is unreadable: {e}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Unwraps a deflated room, or hands back the stream untouched if it is not one.
+        /// The whole thing is inflated into memory rather than streamed, because the
+        /// reader seeks and a DeflateStream cannot.
+        /// </summary>
+        private static Stream Inflate(Stream s)
+        {
+            var head = new byte[8];
+            int got = s.Read(head, 0, 8);
+            if (got == 8 &&
+                head[0] == (byte)'G' && head[1] == (byte)'G' &&
+                head[2] == (byte)'H' && head[3] == (byte)'Z')
+            {
+                int raw = head[4] | (head[5] << 8) | (head[6] << 16) | (head[7] << 24);
+                var outp = new MemoryStream(raw > 0 ? raw : 0);
+                using (var d = new DeflateStream(s, CompressionMode.Decompress, leaveOpen: true))
+                {
+                    d.CopyTo(outp);
+                }
+                if (raw > 0 && outp.Length != raw)
+                {
+                    Plugin.Log.LogWarning(
+                        $"Godhome: room inflated to {outp.Length} bytes, header says {raw}.");
+                }
+                outp.Position = 0;
+                return outp;
+            }
+
+            // Not compressed: rewind past what we peeked and read it straight.
+            var all = new MemoryStream();
+            all.Write(head, 0, got);
+            s.CopyTo(all);
+            all.Position = 0;
+            return all;
         }
 
         /// <summary>
@@ -991,6 +1047,33 @@ namespace SilksongGodhome.Rebuild
                     o.AlwaysEnterLeft = r.ReadBoolean();
                     o.HardLandOnExit = r.ReadBoolean();
                     o.NonHazardGate = r.ReadBoolean();
+                }
+
+                if ((o.Mask & HasPhys) != 0)
+                {
+                    o.HasBody = r.ReadBoolean();
+                    if (o.HasBody)
+                    {
+                        o.Mass = r.ReadSingle();
+                        o.GravityScale = r.ReadSingle();
+                        o.LinearDrag = r.ReadSingle();
+                        o.AngularDrag = r.ReadSingle();
+                        o.BodyType = r.ReadInt32();
+                        o.Constraints = r.ReadInt32();
+                        o.CollisionDetection = r.ReadInt32();
+                        o.Interpolate = r.ReadInt32();
+                    }
+                    o.Circles = new CircleDef[r.ReadInt32()];
+                    for (int c = 0; c < o.Circles.Length; c++)
+                    {
+                        o.Circles[c] = new CircleDef
+                        {
+                            Offset = new Vector2(r.ReadSingle(), r.ReadSingle()),
+                            Radius = r.ReadSingle(),
+                            Trigger = r.ReadBoolean(),
+                            Enabled = r.ReadBoolean(),
+                        };
+                    }
                 }
 
                 ReadBehaviour(r, o.Mask, out o.Tk2d, out o.Fsms, out o.Components);

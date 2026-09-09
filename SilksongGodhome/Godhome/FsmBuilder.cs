@@ -61,11 +61,19 @@ namespace SilksongGodhome.Godhome
         private static FsmObject MakeObject(FsmData.Var x)
         {
             var o = new FsmObject(x.Name);
-            if (!string.IsNullOrEmpty(x.Resource) &&
-                _assets.TryGetValue(x.Resource, out UnityEngine.Object asset) && asset != null)
+            if (string.IsNullOrEmpty(x.Resource)) return o;
+
+            if (_assets.TryGetValue(x.Resource, out UnityEngine.Object asset) && asset != null)
             {
                 o.Value = asset;
+                return o;
             }
+
+            // A rebuilt ScriptableObject. This is the one that matters for music:
+            // ApplyMusicCue takes its MusicCue as an FsmObject, so without this lookup
+            // "Gods and Glory" arrives null and the action quietly plays nothing.
+            ScriptableObject so = BehaviourBuilder.AssetNamed(x.Resource);
+            if (so != null) o.Value = so;
             return o;
         }
 

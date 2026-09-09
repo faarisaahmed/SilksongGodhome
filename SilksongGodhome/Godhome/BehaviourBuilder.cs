@@ -64,12 +64,17 @@ namespace SilksongGodhome.Godhome
             // Hollow Knight wants it.
             BuildAssets(baked);
 
+            // Sounds and assets have to be in the map before any prefab's FSMs are built.
+            RefreshFsmAssets();
+
             // Prefabs before components, because a component field can point at one.
             foreach (GodhomeData.PrefabDef p in baked.Prefabs ?? new GodhomeData.PrefabDef[0])
             {
                 GameObject g = BuildPrefab(p);
                 if (g != null) prefabs[p.Name] = g;
             }
+
+            RefreshFsmAssets();
 
             if (_colls.Length > 0 || prefabs.Count > 0)
             {
@@ -166,22 +171,29 @@ namespace SilksongGodhome.Godhome
             }
         }
 
+        // Rebuilt once per room rather than per object: a room has hundreds of FSMs and
+        // rebuilding this map for each of them was pure waste.
+        private static Dictionary<string, UnityEngine.Object> _fsmAssets =
+            new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+
+        private static void RefreshFsmAssets()
+        {
+            _fsmAssets = new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, AudioClip> kv in ClipCache)
+            {
+                if (kv.Value != null) _fsmAssets[kv.Key] = kv.Value;
+            }
+            foreach (KeyValuePair<string, ScriptableObject> kv in AssetCache)
+            {
+                if (kv.Value != null) _fsmAssets[kv.Key] = kv.Value;
+            }
+            FsmBuilder.SetAssets(_fsmAssets, PrefabCache);
+        }
+
         public static int AddFsms(GameObject go, FsmData.Fsm[] fsms)
         {
             if (fsms == null || fsms.Length == 0) return 0;
-            FsmBuilder.SetAssets(AsObjects(ClipCache), PrefabCache);
             return FsmBuilder.Attach(go, fsms);
-        }
-
-        private static Dictionary<string, UnityEngine.Object> AsObjects(
-            Dictionary<string, AudioClip> src)
-        {
-            var map = new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
-            foreach (KeyValuePair<string, AudioClip> kv in src)
-            {
-                if (kv.Value != null) map[kv.Key] = kv.Value;
-            }
-            return map;
         }
 
         // ------------------------------------------------------------------
