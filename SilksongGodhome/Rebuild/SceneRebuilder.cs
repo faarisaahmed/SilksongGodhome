@@ -805,6 +805,12 @@ namespace SilksongGodhome.Rebuild
             ComponentInit.FillNulls(m);
             m.respawnFacingRight = d.RespawnFacingRight;
 
+            // GameManager.GetRespawnInfo validates a saved respawn point against
+            // SceneTeleportMap and silently falls back to Tut_01 on a miss, so every
+            // marker we rebuild has to be registered - not just the Godseeker spawn.
+            try { SceneTeleportMap.AddRespawnPoint(SceneRedirect.CurrentGodhomeScene, go.name); }
+            catch (Exception) { }
+
             // Godhome's bench is a RespawnMarker on an object called "RestBench" - the
             // same object that carries the RestBench component. Attaching the bench
             // behaviour here means it always lands on the marker the respawn path uses.

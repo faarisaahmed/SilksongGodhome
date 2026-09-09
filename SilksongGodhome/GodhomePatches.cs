@@ -65,7 +65,72 @@ namespace SilksongGodhome
         }
 
         // ------------------------------------------------------------------
-        // 3. Serve the GG_* scenes, which Silksong doesn't ship.
+        // 3. Let a Godhome save load back into Godhome.
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// GetRespawnInfo doesn't trust playerData.respawnScene - it validates the scene
+        /// and marker against SceneTeleportMap and, on a miss, silently rewrites them to
+        /// Tut_01. We register the hub at boot, but a save made at Godhome's bench points
+        /// at that bench's own marker, which only exists once the scene has been rebuilt.
+        /// On a cold launch that lookup fails and the player lands in the tutorial.
+        ///
+        /// So: if the save points at a Godhome scene we actually have baked, put the
+        /// saved values back. Everything else is left to the game.
+        /// </summary>
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(GameManager), "GetRespawnInfo")]
+        private static void GameManager_GetRespawnInfo_Postfix(
+            GameManager __instance, ref string scene, ref string marker)
+        {
+            try
+            {
+                PlayerData pd = __instance.playerData;
+                if (pd == null) return;
+
+                string saved = !string.IsNullOrEmpty(pd.tempRespawnScene)
+                    ? pd.tempRespawnScene
+                    : pd.respawnScene;
+                if (!SceneRedirect.IsGodhomeScene(saved)) return;
+                if (!GodhomeData.HasScene(saved)) return;
+                if (scene == saved) return;   // the map already accepted it
+
+                string savedMarker = !string.IsNullOrEmpty(pd.tempRespawnScene)
+                    ? pd.tempRespawnMarker
+                    : pd.respawnMarkerName;
+
+                Plugin.Log.LogInfo(
+                    $"Godhome: restoring respawn to '{saved}' / '{savedMarker}' " +
+                    $"(the teleport map had sent us to '{scene}').");
+
+                scene = saved;
+                if (!string.IsNullOrEmpty(savedMarker)) marker = savedMarker;
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError("Godhome: couldn't restore the Godhome respawn point: " + e);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // 4. Show Godhome saves as Godhome on the save-select screen.
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// PresentSaveSlot is where a slot's art and label are decided. Running after it
+        /// means we don't have to reproduce any of that logic - only override the two
+        /// pieces that should differ for a Godseeker save.
+        /// </summary>
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(UnityEngine.UI.SaveSlotButton), "PresentSaveSlot")]
+        private static void SaveSlotButton_PresentSaveSlot_Postfix(
+            UnityEngine.UI.SaveSlotButton __instance, SaveStats currentSaveStats)
+        {
+            Godhome.GodhomeSaveSlot.Apply(__instance, currentSaveStats);
+        }
+
+        // ------------------------------------------------------------------
+        // 5. Serve the GG_* scenes, which Silksong doesn't ship.
         // ------------------------------------------------------------------
 
         /// <summary>

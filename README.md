@@ -396,6 +396,28 @@ boss's logic.
 Faking a `BossSceneController` would have been the other route, but its `Awake` pulls on
 sequence loading, which is a lot of machinery to satisfy for one boolean.
 
+### Godhome saves look like Godhome
+
+A Godseeker save now shows Godhome's own art and the name "Godhome" on the save-select
+screen, and loading it puts you back at your Godhome respawn point.
+
+Silksong already distinguishes these saves - `SaveStats.BossRushMode` is read straight
+out of the save file (`playerData.bossRushMode`, which the Godseeker loadout sets), so
+nothing has to be inferred. The slot's art and label are chosen in
+`SaveSlotButton.PresentSaveSlot`, so a postfix there overrides just those two pieces.
+The `AreaBackground.NameOverride` route was the obvious one but its `LocalisedString`
+resolves through a localisation sheet the mod doesn't ship, so it would have rendered as
+a missing-key placeholder.
+
+**Loading back in** needed one more fix. `GameManager.GetRespawnInfo` validates the saved
+scene and marker against `SceneTeleportMap` and, on a miss, silently rewrites them to
+`Tut_01`. The hub is registered at boot, but a save made at Godhome's bench points at that
+bench's marker, which only exists once the scene has been rebuilt - so a cold launch would
+drop you in the tutorial. A postfix restores the saved values whenever they name a Godhome
+scene we have baked.
+
+Drop your own art in as `SilksongGodhome/Baked/ui_area_godhome.png`.
+
 ### Bosses in their own arenas, with their own sounds
 
 Each baked boss records the Hollow Knight scene it came from, so `BossRegistry` indexes
