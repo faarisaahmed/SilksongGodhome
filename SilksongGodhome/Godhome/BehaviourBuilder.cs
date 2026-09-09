@@ -47,12 +47,10 @@ namespace SilksongGodhome.Godhome
                 if (c == null || string.IsNullOrEmpty(c.Name)) continue;
                 if (!ClipCache.TryGetValue(c.Name, out AudioClip a) || a == null)
                 {
-                    a = GodhomeData.LoadClip(new GodhomeData.ClipDef
-                    {
-                        Name = c.Name,
-                        SampleCount = c.SampleCount,
-                        Rate = c.Rate,
-                    });
+                    // The def itself, not a copy of three of its fields: rebuilding it
+                    // dropped Format, so every music track was looked up as .pcm and
+                    // reported missing while its .adpcm sat in the DLL unread.
+                    a = GodhomeData.LoadClip(c);
                     ClipCache[c.Name] = a;
                 }
                 if (a != null) clips[c.Name] = a;

@@ -43,6 +43,29 @@ namespace SilksongGodhome.Rebuild
             "SceneManager",
             // Would re-enter the scene loading we are standing inside.
             "SceneAdditiveLoadConditional", "ScenePreloader",
+
+            // Components whose meaning belongs to the host game's camera rig rather than
+            // to Godhome's content. These are the ones that took the background away.
+            //
+            // BlurPlane is the culprit. Silksong's camera does, every frame:
+            //
+            //     BlurPlane closestBlurPlane = BlurPlane.ClosestBlurPlane;
+            //     if (closestBlurPlane != null)
+            //         sceneCamera.farClipPlane = closestBlurPlane.PlaneZ - sceneCamera.z + eps;
+            //
+            // so eleven blur planes rebuilt at Hollow Knight's Z pulled Silksong's far
+            // clip plane in and clipped everything behind it. The boss sits near z=0 and
+            // survived; the architecture did not. The cost of skipping it is no
+            // background blur, which is a great deal better than no background.
+            "BlurPlane",
+            // Deactivates its own GameObject when |world z - 0.004| exceeds a limit.
+            // Same problem from the other side: a depth convention that does not
+            // survive the move between two camera setups.
+            "DisableIfZPos",
+            // Rewrites transform.position.z, and can deParent - which would let an
+            // object escape GodhomeRoot and leak into the next room. The baked transform
+            // already carries the z it would set.
+            "SetZ",
         };
 
         public static Type Resolve(string name)

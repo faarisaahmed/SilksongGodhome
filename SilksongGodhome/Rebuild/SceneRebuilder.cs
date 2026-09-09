@@ -582,7 +582,19 @@ namespace SilksongGodhome.Rebuild
                 if (ov != null) ov.SetValue(sm, true);
                 else Plugin.Log.LogWarning("Godhome: overrideColorSettings not found; the grading may be overwritten.");
 
-                sm.UpdateScene();
+                // Pushing the values in is the part that matters; UpdateScene only asks
+                // the game to act on them and reaches into the hero's light and the
+                // colour grading, either of which can be absent this early. Letting it
+                // throw used to lose the grading that had already been set.
+                try
+                {
+                    sm.UpdateScene();
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning(
+                        "Godhome: grading set, but UpdateScene threw: " + e.Message);
+                }
 
                 Plugin.Log.LogInfo(
                     $"Godhome: applied Hollow Knight's grading (saturation {l.Saturation:F2}, " +
@@ -788,19 +800,43 @@ namespace SilksongGodhome.Rebuild
             }
 
             // Pass two: Hollow Knight's own components, by name.
+            //
+            // Each object is switched off while its components go on, and switched back
+            // on once their fields are set. Unity runs Awake and OnEnable inside
+            // AddComponent, but only fills serialised fields when it deserialises - so a
+            // component added to a live object wakes up with every array still null.
+            // ShineAnimSequence.OnEnable walks its shineObjects array immediately and
+            // threw on every one of them. Deactivating first gives these components the
+            // order they were written for: fields, then Awake.
             int comps = 0;
+            var reactivate = new List<GameObject>();
             for (int i = 0; i < baked.Objects.Length; i++)
             {
                 GodhomeData.ObjectDef d = baked.Objects[i];
                 if ((d.Mask & GodhomeData.HasComps) == 0 || made[i] == null) continue;
+
+                GameObject go = made[i].gameObject;
+                bool wasActive = go.activeSelf;
+                if (wasActive)
+                {
+                    go.SetActive(false);
+                    reactivate.Add(go);
+                }
+
                 foreach (GodhomeData.ComponentDef c in d.Components)
                 {
-                    if (ComponentApplier.Apply(made[i].gameObject, c, deferred) != null) comps++;
+                    if (ComponentApplier.Apply(go, c, deferred) != null) comps++;
                 }
             }
 
             // Pass three: the references held back until the room existed.
             ComponentApplier.Resolve(deferred);
+
+            // Now they may wake, with everything they expect in place.
+            foreach (GameObject go in reactivate)
+            {
+                if (go != null) go.SetActive(true);
+            }
 
             // BossSceneController.Setup() subscribes to its bosses' OnDeath, which is
             // what ends a Godhome fight. Hollow Knight calls it from Awake, but only when
