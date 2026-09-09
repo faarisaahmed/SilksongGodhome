@@ -102,6 +102,10 @@ namespace SilksongGodhome.Godhome
 
                 if (GodhomeConfig.TraceBossStates.Value) go.AddComponent<BossTrace>();
 
+                // A boss that leaves the room takes the fight with it. This reports how
+                // and brings it back; see BossLeash for why it is a net and not a fix.
+                go.AddComponent<BossLeash>();
+
                 return go;
             }
             catch (Exception e)
