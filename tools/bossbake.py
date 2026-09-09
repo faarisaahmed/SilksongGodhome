@@ -36,7 +36,7 @@ from fsmbake import write_fsm, FSM_MAGIC, FSM_VERSION
 from audiobake import decode_clip
 
 MAGIC = b"GGBS"
-VERSION = 5
+VERSION = 6
 
 HK = os.path.expanduser(
     "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
@@ -162,21 +162,40 @@ def bake(scene_name, boss_name, log=print):
     fsmbake.ASSET_RESOLVER = resolve_audio
 
     # -- hierarchy -----------------------------------------------------
-    tr = {}
-    go = {}
-    for o in scene.scene_objects("GameObject"):
-        try:
-            go[o.path_id] = o.read_typetree()
-        except Exception:
-            pass
-    for o in scene.scene_objects("Transform"):
-        try:
-            tr[o.path_id] = o.read_typetree()
-        except Exception:
-            pass
-    g2t = {}
-    for pid, d in tr.items():
-        g2t[(d.get("m_GameObject") or {}).get("m_PathID")] = pid
+    #
+    # Per assets file, not just the level: the prefabs a boss spawns - Gorb's needles,
+    # every hit effect - live in shared assets files, and their own hierarchies have to
+    # be walked the same way.
+    file_maps = {}
+
+    class Ctx:
+        """The GameObject/Transform tables of one assets file."""
+
+        def __init__(self, fname):
+            self.file = fname
+            self.go = {}
+            self.tr = {}
+            for o in scene.env.objects:
+                if scene.file_of(o) != fname:
+                    continue
+                try:
+                    if o.type.name == "GameObject":
+                        self.go[o.path_id] = o.read_typetree()
+                    elif o.type.name == "Transform":
+                        self.tr[o.path_id] = o.read_typetree()
+                except Exception:
+                    pass
+            self.g2t = {}
+            for pid, d in self.tr.items():
+                self.g2t[(d.get("m_GameObject") or {}).get("m_PathID")] = pid
+
+    def ctx_for(fname):
+        if fname not in file_maps:
+            file_maps[fname] = Ctx(fname)
+        return file_maps[fname]
+
+    level = ctx_for(lvl)
+    go, tr, g2t = level.go, level.tr, level.g2t
 
     boss_gid = None
     for pid, d in go.items():
@@ -186,11 +205,11 @@ def bake(scene_name, boss_name, log=print):
     if boss_gid is None:
         raise SystemExit(f"no GameObject named '{boss_name}' in {scene_name}")
 
-    def components(gpid):
+    def components(ctx, gpid):
         out = []
-        for c in (go.get(gpid, {}).get("m_Component") or []):
+        for c in (ctx.go.get(gpid, {}).get("m_Component") or []):
             ptr = c.get("component") if isinstance(c, dict) else None
-            o = scene.resolve(ptr, lvl) if ptr else None
+            o = scene.resolve(ptr, ctx.file) if ptr else None
             if o is not None:
                 out.append(o)
         return out
@@ -306,6 +325,80 @@ def bake(scene_name, boss_name, log=print):
         log(f"    library[{idx}] '{lname}': {len(anim['clips'])} clips")
         return idx
 
+    # -- spawned prefabs ------------------------------------------------
+    #
+    # Gorb has no needles in his hierarchy: his Attacking FSM calls
+    # SpawnObjectFromGlobalPool 26 times on one prefab, and that prefab lives in a shared
+    # assets file. Without it he is defenseless. The same is true of every hit effect,
+    # dust cloud and corpse a boss throws.
+    #
+    # So an FSM's GameObject parameters and variables are resolved here: if the pointer
+    # is a prefab, its hierarchy is baked into a prefab table and the parameter records
+    # the table entry's name. The C# side builds each prefab once, inactive, and hands it
+    # to the FsmGameObject - after which PlayMaker's own spawn actions do the rest.
+    prefabs = []          # (name, file, gpid)
+    prefab_index = {}     # (file, path_id) -> name
+    prefab_queue = []
+    fsm_file = [lvl]      # which file the FSM currently being written came from
+
+    def resolve_prefab(ptr):
+        if not ptr or not ptr.get("m_PathID"):
+            return ""
+        obj = scene.resolve(ptr, fsm_file[0])
+        if obj is None or obj.type.name != "GameObject":
+            return ""
+
+        # Only assets outside the level file. A pointer *into* the level is a reference to
+        # a live scene object - the arena's Battle Scene, the boss's own Boss Holder, Mato
+        # and Oro's shared Brothers container - and the FSM wants that object, not a copy
+        # of it. Baking those as templates duplicated whole arenas: False Knight's bake
+        # was 92 objects, most of them the arena he stands in, and Mato's included Oro.
+        if scene.file_of(obj) == lvl:
+            return ""
+
+        key = (scene.file_of(obj), obj.path_id)
+        if key in prefab_index:
+            return prefab_index[key]
+
+        pctx = ctx_for(scene.file_of(obj))
+        if obj.path_id not in pctx.go:
+            return ""
+
+        # Bake from the top of the prefab, not from whichever object the pointer names.
+        # A pointer into the middle of a prefab would otherwise lose its parent's
+        # transform - and PlayMaker spawns the root.
+        root = obj.path_id
+        guard = 0
+        while guard < 32:
+            guard += 1
+            t = pctx.tr.get(pctx.g2t.get(root))
+            f = (t or {}).get("m_Father", {}).get("m_PathID", 0)
+            if not f or f not in pctx.tr:
+                break
+            pg = (pctx.tr[f].get("m_GameObject") or {}).get("m_PathID")
+            if not pg or pg not in pctx.go:
+                break
+            root = pg
+        rkey = (pctx.file, root)
+        if rkey in prefab_index:
+            prefab_index[key] = prefab_index[rkey]
+            return prefab_index[rkey]
+
+        base = pctx.go[root].get("m_Name") or "prefab"
+        name = "".join(c if c.isalnum() or c in "._-" else "_" for c in base)
+        n, taken = name, {p[0] for p in prefabs}
+        i = 2
+        while name in taken:
+            name = f"{n}_{i}"
+            i += 1
+        prefab_index[rkey] = name
+        prefab_index[key] = name
+        prefabs.append((name, pctx.file, root))
+        prefab_queue.append((name, pctx.file, root))
+        return name
+
+    fsmbake.GAMEOBJECT_RESOLVER = resolve_prefab
+
     # -- nodes ---------------------------------------------------------
     #
     # write_fsm resolves audio as it goes and the collection tables are filled in while
@@ -314,9 +407,9 @@ def bake(scene_name, boss_name, log=print):
     scratch = Writer()
     stats = {"sprites": 0, "animators": 0, "fsms": 0, "states": 0, "actions": 0, "nodes": 0}
 
-    def write_node(w, gpid, is_root=False):
-        d = go[gpid]
-        t = tr.get(g2t.get(gpid)) or {}
+    def write_node(w, ctx, gpid, is_root=False):
+        d = ctx.go[gpid]
+        t = ctx.tr.get(ctx.g2t.get(gpid)) or {}
         pos = t.get("m_LocalPosition") or {}
         rot = t.get("m_LocalRotation") or {}
         scl = t.get("m_LocalScale") or {}
@@ -348,7 +441,7 @@ def bake(scene_name, boss_name, log=print):
         animator = None
         node_fsms = []
 
-        for o in components(gpid):
+        for o in components(ctx, gpid):
             n = o.type.name
             if n == "Rigidbody2D":
                 rb = o.read_typetree()
@@ -360,7 +453,7 @@ def bake(scene_name, boss_name, log=print):
                 continue
             else:
                 raw2 = o.get_raw_data()
-                cn = class_of(scene, o, lvl)
+                cn = class_of(scene, o, ctx.file)
                 if cn == "HealthManager":
                     try:
                         health = read_fields(raw2, HEALTH_HEAD)["hp"]
@@ -383,12 +476,13 @@ def bake(scene_name, boss_name, log=print):
                         log(f"    ! tk2dSpriteAnimator on '{d.get('m_Name')}' failed: {e!r}")
                 elif cn == "PlayMakerFSM":
                     try:
+                        fsm_file[0] = ctx.file
                         fsm, used = parse_fsm_component(raw2)
                         if used != len(raw2):
                             log(f"  ! FSM on '{d.get('m_Name')}' consumed {used} of "
                                 f"{len(raw2)}; skipped")
                         else:
-                            node_fsms.append(fsm)
+                            node_fsms.append((fsm, ctx.file))
                     except Exception as e:
                         log(f"  ! FSM parse on '{d.get('m_Name')}' failed: {e!r}")
 
@@ -396,7 +490,7 @@ def bake(scene_name, boss_name, log=print):
         # all point at one collection and differ only in which sprite of it they show.
         ci = -1
         if sprite is not None:
-            cobj = scene.resolve(sprite["collection"], lvl)
+            cobj = scene.resolve(sprite["collection"], ctx.file)
             if cobj is not None:
                 try:
                     ci = register_collection(cobj)
@@ -415,7 +509,7 @@ def bake(scene_name, boss_name, log=print):
 
         li = -1
         if animator is not None:
-            aobj = scene.resolve(animator["library"], lvl)
+            aobj = scene.resolve(animator["library"], ctx.file)
             if aobj is not None:
                 try:
                     li = register_library(aobj)
@@ -467,22 +561,41 @@ def bake(scene_name, boss_name, log=print):
             w.i32(int(damage["hazardType"]))
 
         w.i32(len(node_fsms))
-        for f in node_fsms:
+        for f, ffile in node_fsms:
             stats["fsms"] += 1
             stats["states"] += len(f["states"])
             stats["actions"] += sum(len(s["actionData"]["actionNames"]) for s in f["states"])
+            fsm_file[0] = ffile
             write_fsm(w, f)
 
         kids = []
-        for c in ((tr.get(g2t.get(gpid)) or {}).get("m_Children") or []):
-            cp = (tr.get(c["m_PathID"]) or {}).get("m_GameObject", {}).get("m_PathID")
-            if cp and cp in go:
+        for c in ((ctx.tr.get(ctx.g2t.get(gpid)) or {}).get("m_Children") or []):
+            cp = (ctx.tr.get(c["m_PathID"]) or {}).get("m_GameObject", {}).get("m_PathID")
+            if cp and cp in ctx.go:
                 kids.append(cp)
         w.i32(len(kids))
         for k in kids:
-            write_node(w, k)
+            write_node(w, ctx, k)
 
-    write_node(scratch, boss_gid, is_root=True)
+    write_node(scratch, level, boss_gid, is_root=True)
+
+    # Prefabs, in discovery order, until the queue stops growing: a prefab's own FSMs can
+    # name further prefabs (a needle that spawns an impact effect).
+    prefab_bufs = []
+    drained = 0
+    while prefab_queue:
+        name, pfile, pgid = prefab_queue.pop(0)
+        pw = Writer()
+        write_node(pw, ctx_for(pfile), pgid, is_root=False)
+        prefab_bufs.append((name, pw.bytes()))
+        drained += 1
+        if drained > 256:
+            log("    ! prefab queue over 256 entries; stopping")
+            break
+    if prefab_bufs:
+        log(f"  prefabs: {len(prefab_bufs)} ({', '.join(n for n, _ in prefab_bufs[:6])}"
+            f"{', ...' if len(prefab_bufs) > 6 else ''})")
+
     log(f"  {stats['nodes']} nodes: {stats['sprites']} sprite(s), "
         f"{stats['animators']} animator(s), {stats['fsms']} FSM(s) "
         f"({stats['states']} states, {stats['actions']} actions)")
@@ -541,6 +654,11 @@ def bake(scene_name, boss_name, log=print):
         w.i32(rate)
     if boss_clips:
         log(f"  audio: {len(boss_clips)} clips referenced by the FSMs")
+
+    w.i32(len(prefab_bufs))
+    for name, buf in prefab_bufs:
+        w.string(name)
+        w.buf += buf
 
     w.buf += scratch.bytes()
 

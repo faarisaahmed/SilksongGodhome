@@ -17,8 +17,9 @@ namespace SilksongGodhome.Godhome
     /// `LoadActions` run gives real, correctly-typed action instances.
     ///
     /// What doesn't cross: anything that was a pointer into Hollow Knight's asset files -
-    /// spawned prefabs, audio clips, material references. Those come back null, so actions
-    /// that use them no-op. Actions that move, animate, wait, branch and send events work.
+    /// audio clips, material references, spawned prefabs. Audio and prefabs are baked and
+    /// re-linked by name; the rest come back null, so actions that use them no-op.
+    /// Actions that move, animate, wait, branch, spawn and send events work.
     /// </summary>
     internal static class FsmBuilder
     {
@@ -31,9 +32,30 @@ namespace SilksongGodhome.Godhome
         private static Dictionary<string, UnityEngine.Object> _assets =
             new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
 
-        public static void SetAssets(Dictionary<string, UnityEngine.Object> assets)
+        /// <summary>
+        /// Prefabs a boss's FSMs spawn, keyed by baked name. PlayMaker's spawn actions
+        /// take an FsmGameObject and Instantiate it; give them a real object and Gorb
+        /// throws needles again.
+        /// </summary>
+        private static Dictionary<string, GameObject> _prefabs =
+            new Dictionary<string, GameObject>(StringComparer.Ordinal);
+
+        public static void SetAssets(Dictionary<string, UnityEngine.Object> assets,
+                                     Dictionary<string, GameObject> prefabs = null)
         {
             _assets = assets ?? new Dictionary<string, UnityEngine.Object>(StringComparer.Ordinal);
+            _prefabs = prefabs ?? new Dictionary<string, GameObject>(StringComparer.Ordinal);
+        }
+
+        private static FsmGameObject MakeGameObject(FsmData.Var x)
+        {
+            var g = new FsmGameObject(x.Name);
+            if (!string.IsNullOrEmpty(x.Resource) &&
+                _prefabs.TryGetValue(x.Resource, out GameObject prefab) && prefab != null)
+            {
+                g.Value = prefab;
+            }
+            return g;
         }
 
         private static FsmObject MakeObject(FsmData.Var x)
@@ -131,7 +153,7 @@ namespace SilksongGodhome.Godhome
             v.ColorVariables = Map(d.Colors, x => new FsmColor(x.Name) { Value = new Color(x.V.x, x.V.y, x.V.z, x.V.w) });
             v.RectVariables = Map(d.Rects, x => new FsmRect(x.Name) { Value = new Rect(x.V.x, x.V.y, x.V.z, x.V.w) });
             v.QuaternionVariables = Map(d.Quaternions, x => new FsmQuaternion(x.Name) { Value = new Quaternion(x.V.x, x.V.y, x.V.z, x.V.w) });
-            v.GameObjectVariables = Map(d.GameObjects, x => new FsmGameObject(x.Name));
+            v.GameObjectVariables = Map(d.GameObjects, MakeGameObject);
             v.ObjectVariables = Map(d.Objects, MakeObject);
             return v;
         }
@@ -174,7 +196,7 @@ namespace SilksongGodhome.Godhome
 
             Set(ad, "unityObjectParams", NullList<UnityEngine.Object>(d.UnityObjectCount));
 
-            Set(ad, "fsmGameObjectParams", Map(d.GameObjects, x => new FsmGameObject(x.Name)).ToList());
+            Set(ad, "fsmGameObjectParams", Map(d.GameObjects, MakeGameObject).ToList());
 
             var owners = new List<FsmOwnerDefault>();
             for (int i = 0; i < d.OwnerDefaults.Count; i++)
@@ -182,7 +204,7 @@ namespace SilksongGodhome.Godhome
                 owners.Add(new FsmOwnerDefault
                 {
                     OwnerOption = (OwnerDefaultOption)d.OwnerOptions[i],
-                    GameObject = new FsmGameObject(d.OwnerDefaults[i].Name),
+                    GameObject = MakeGameObject(d.OwnerDefaults[i]),
                 });
             }
             Set(ad, "fsmOwnerDefaultParams", owners);

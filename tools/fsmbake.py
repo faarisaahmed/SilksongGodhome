@@ -14,7 +14,7 @@ that move, animate, time and branch will not.
 from ggformat import Writer
 
 FSM_MAGIC = b"GGFS"
-FSM_VERSION = 1
+FSM_VERSION = 2
 
 
 def _named(w, v):
@@ -61,8 +61,21 @@ def _w_object(w, v):
     w.string(res)
 
 
+# Set by bossbake: given an FsmGameObject's PPtr, return the name of a baked prefab for
+# it, or "". This is what lets Gorb throw needles - his FSM spawns a prefab, and without
+# it the parameter arrives null and SpawnObjectFromGlobalPool quietly does nothing.
+GAMEOBJECT_RESOLVER = None
+
+
 def _w_gameobject(w, v):
     _named(w, v)
+    res = ""
+    if GAMEOBJECT_RESOLVER is not None:
+        try:
+            res = GAMEOBJECT_RESOLVER(v.get("value")) or ""
+        except Exception:
+            res = ""
+    w.string(res)
 
 
 def _w_owner_default(w, v):

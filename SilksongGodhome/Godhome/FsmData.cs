@@ -133,7 +133,17 @@ namespace SilksongGodhome.Godhome
             v.Resource = r.ReadString();
             return v;
         }
-        private static Var GO(BinaryReader r) { return ReadNamed(r); }
+        /// <summary>
+        /// An FsmGameObject. <see cref="Var.Resource"/> holds the name of a baked prefab
+        /// when the pointer named one - a boss's needle, its hit effect - and is empty
+        /// otherwise.
+        /// </summary>
+        private static Var GO(BinaryReader r)
+        {
+            Var v = ReadNamed(r);
+            v.Resource = r.ReadString();
+            return v;
+        }
         private static Var En(BinaryReader r) { Var v = ReadNamed(r); v.TypeName = r.ReadString(); v.I = r.ReadInt32(); return v; }
 
         private static void ReadList(BinaryReader r, List<Var> into, System.Func<BinaryReader, Var> fn)

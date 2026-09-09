@@ -22,7 +22,7 @@ namespace SilksongGodhome.Godhome
     {
         private const string Prefix = "Godhome.";
         private const string Magic = "GGBS";
-        private const int Version = 5;
+        private const int Version = 6;
 
         public sealed class SpriteDef
         {
@@ -125,12 +125,20 @@ namespace SilksongGodhome.Godhome
             public int SampleCount, Rate;
         }
 
+        /// <summary>A prefab a boss's FSMs spawn, baked as its own hierarchy.</summary>
+        public sealed class Prefab
+        {
+            public string Name;
+            public Node Root;
+        }
+
         public sealed class Boss
         {
             public string Name;
             public string Scene;
             public Collection[] Collections;
             public Library[] Libraries;
+            public Prefab[] Prefabs;
             public Node Root;
             /// <summary>Clips the FSMs reference, by resource name.</summary>
             public System.Collections.Generic.Dictionary<string, ClipInfo> FsmClips =
@@ -230,13 +238,20 @@ namespace SilksongGodhome.Godhome
                         b.FsmClips[cn] = new ClipInfo { SampleCount = r.ReadInt32(), Rate = r.ReadInt32() };
                     }
 
+                    b.Prefabs = new Prefab[r.ReadInt32()];
+                    for (int i = 0; i < b.Prefabs.Length; i++)
+                    {
+                        b.Prefabs[i] = new Prefab { Name = r.ReadString(), Root = ReadNode(r) };
+                    }
+
                     b.Root = ReadNode(r);
 
                     int nodes = 0, st = 0, ac = 0, nf = 0;
                     Walk(b.Root, ref nodes, ref nf, ref st, ref ac);
                     Plugin.Log.LogInfo(
                         $"Godhome: loaded boss '{b.Name}' - {nodes} nodes, {b.Collections.Length} " +
-                        $"collection(s), {b.Libraries.Length} librar(ies), {nf} FSMs " +
+                        $"collection(s), {b.Libraries.Length} librar(ies), " +
+                        $"{b.Prefabs.Length} prefab(s), {nf} FSMs " +
                         $"({st} states, {ac} actions).");
                     return b;
                 }

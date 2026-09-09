@@ -16,6 +16,7 @@ namespace SilksongGodhome
         public static ConfigEntry<KeyCode> SpawnBossKey;
         public static ConfigEntry<string> SpawnBossName;
         public static ConfigEntry<bool> VerboseRebuildLogging;
+        public static ConfigEntry<bool> TraceBossStates;
         public static ConfigEntry<string> DonorScene;
 
         public static void Bind(ConfigFile cfg)
@@ -49,6 +50,12 @@ namespace SilksongGodhome
                 "Give at least two, comma-separated: moving between two Godhome rooms " +
                 "would otherwise ask the game to load the scene it is already standing " +
                 "in, which deadlocks the transition.");
+
+            TraceBossStates = cfg.Bind(
+                "Debug", "TraceBossStates", true,
+                "Logs every state change in a spawned boss's FSMs. This is the fastest " +
+                "way to tell a boss that is misbehaving from one that is simply sitting " +
+                "in a state waiting for an event the arena never sends.");
 
             SkipBossKey = cfg.Bind(
                 "Debug", "SkipBossKey", KeyCode.F8,

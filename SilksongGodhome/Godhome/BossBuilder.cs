@@ -68,7 +68,7 @@ namespace SilksongGodhome.Godhome
                     return null;
                 }
 
-                FsmBuilder.SetAssets(LoadFsmAssets(boss));
+                FsmBuilder.SetAssets(LoadFsmAssets(boss), BuildPrefabs(boss, colls, libs));
 
                 var go = new GameObject("Godhome_" + boss.Name);
 
@@ -100,6 +100,8 @@ namespace SilksongGodhome.Godhome
                 // should still die when you kill it.
                 if (HasHealth(root)) go.AddComponent<BossDeath>();
 
+                if (GodhomeConfig.TraceBossStates.Value) go.AddComponent<BossTrace>();
+
                 return go;
             }
             catch (Exception e)
@@ -113,6 +115,60 @@ namespace SilksongGodhome.Godhome
         {
             public int Nodes, Sprites, Animators, Fsms;
         }
+
+        /// <summary>
+        /// Builds the prefabs a boss's FSMs spawn, each as an inactive template.
+        ///
+        /// Hollow Knight's bosses do not carry all their weapons: Gorb's Attacking FSM
+        /// calls SpawnObjectFromGlobalPool on a needle prefab twenty-six times, and with
+        /// a null parameter that call silently does nothing, which is why he stood there
+        /// defenseless. The templates are inactive and kept out of the scene so that
+        /// Instantiate copies them without them ever running themselves; PlayMaker's own
+        /// spawn actions activate the copies.
+        /// </summary>
+        private static Dictionary<string, GameObject> BuildPrefabs(
+            BossData.Boss boss, tk2dSpriteCollectionData[] colls, tk2dSpriteAnimation[] libs)
+        {
+            var map = new Dictionary<string, GameObject>(StringComparer.Ordinal);
+            if (boss.Prefabs == null) return map;
+
+            foreach (BossData.Prefab p in boss.Prefabs)
+            {
+                if (p == null || p.Root == null || string.IsNullOrEmpty(p.Name)) continue;
+                if (PrefabCache.TryGetValue(p.Name, out GameObject cached) && cached != null)
+                {
+                    map[p.Name] = cached;
+                    continue;
+                }
+
+                try
+                {
+                    var go = new GameObject("Godhome_Prefab_" + p.Name);
+                    go.SetActive(false);
+                    UnityEngine.Object.DontDestroyOnLoad(go);
+
+                    var stats = new BuildStats();
+                    // isRoot: a prefab's own root may ship inactive, and the template has
+                    // to stay inactive regardless - the copy is what gets switched on.
+                    BuildNode(go, p.Root, colls, libs, null, stats, isRoot: true);
+                    go.SetActive(false);
+
+                    PrefabCache[p.Name] = go;
+                    map[p.Name] = go;
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogError($"Godhome: prefab '{p.Name}' failed: {e}");
+                }
+            }
+
+            if (map.Count > 0)
+                Plugin.Log.LogInfo($"Godhome: built {map.Count} prefab(s) for '{boss.Name}'.");
+            return map;
+        }
+
+        private static readonly Dictionary<string, GameObject> PrefabCache =
+            new Dictionary<string, GameObject>(StringComparer.Ordinal);
 
         /// <summary>
         /// Builds one object of the hierarchy onto <paramref name="go"/>, then its

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from verify_baked import Reader
 
 MAGIC = b"GGBS"
-VERSION = 5
+VERSION = 6
 
 
 def verify(path):
@@ -121,7 +121,7 @@ def verify(path):
     def V3(): named(); [r.f32() for _ in range(3)]
     def V4(): named(); [r.f32() for _ in range(4)]
     def OBJ(): named(); r.string(); r.string()   # typeName + baked resource name
-    def GO(): named()
+    def GO(): named(); r.string()   # + baked prefab name
     def EN(): named(); r.string(); r.i32()
     def ARR():
         named(); r.i32(); r.string()
@@ -184,6 +184,14 @@ def verify(path):
             for _ in range(r.i32()): r.string(); r.string()
             stats["actions"] += len(action_data())
 
+    nprefab = r.i32()
+    prefab_names = []
+    for _ in range(nprefab):
+        prefab_names.append(r.string())
+        node()
+    prefab_nodes = stats["nodes"]
+    stats["nodes"] = 0
+
     node()
 
     leftover = len(data) - r.i
@@ -202,6 +210,7 @@ def verify(path):
     print(f"                  {stats['bodies']} rigidbody, "
           f"{stats['boxes']} box / {stats['circles']} circle colliders")
     print(f"  hp / damagers   {stats['hp']} / {stats['damagers']}")
+    print(f"  prefabs         {nprefab} {prefab_names[:6]} ({prefab_nodes} objects)")
     print(f"  fsm audio       {nclips} clips {clip_names[:4]}")
     print(f"  FSMs            {stats['fsms']} {fsm_names[:8]}")
     print(f"  states/actions  {stats['states']} / {stats['actions']}")
