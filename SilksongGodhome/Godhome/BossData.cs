@@ -148,8 +148,7 @@ namespace SilksongGodhome.Godhome
         public static Boss Load(string bossName)
         {
             string safe = Sanitize(bossName);
-            Stream s = Assembly.GetExecutingAssembly()
-                               .GetManifestResourceStream(Prefix + "boss_" + safe + ".boss");
+            Stream s = Rebuild.GodhomeResources.Open("boss_" + safe + ".boss");
             if (s == null)
             {
                 Plugin.Log.LogWarning($"Godhome: no baked boss '{bossName}'.");

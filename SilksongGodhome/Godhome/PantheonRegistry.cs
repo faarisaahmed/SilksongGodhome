@@ -42,7 +42,8 @@ namespace SilksongGodhome.Godhome
             _raw = new Dictionary<string, string[]>(StringComparer.Ordinal);
             _sequences = new Dictionary<string, BossSequence>(StringComparer.Ordinal);
 
-            Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream(Resource);
+            Stream s = Rebuild.GodhomeResources.Open(Resource.StartsWith("Godhome.")
+                ? Resource.Substring("Godhome.".Length) : Resource);
             if (s == null)
             {
                 Plugin.Log.LogWarning(

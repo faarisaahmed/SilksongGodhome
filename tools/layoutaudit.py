@@ -12,14 +12,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hkpath import hollow_knight_data, silksong_data
 from hkassets import HKBuild
 from monoread import script_ptr
 from typelayout import layout_of
 from layoutread import parse
 
-HK = os.path.expanduser(
-    "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight/Hollow Knight_Data")
+HK = hollow_knight_data()
 
 SCENES = ["GG_Vengefly", "GG_Gruz_Mother", "GG_False_Knight", "GG_Mega_Moss_Charger",
           "GG_Hornet_1", "GG_Ghost_Gorb", "GG_Dung_Defender", "GG_Mage_Knight",

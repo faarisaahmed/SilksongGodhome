@@ -38,18 +38,11 @@ namespace SilksongGodhome.Godhome
             if (_byScene != null) return;
             _byScene = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
-            Assembly asm = Assembly.GetExecutingAssembly();
-            foreach (string res in asm.GetManifestResourceNames())
+            foreach (string res in Rebuild.GodhomeResources.WithExtension(Suffix))
             {
-                if (!res.StartsWith(Prefix, StringComparison.Ordinal) ||
-                    !res.EndsWith(Suffix, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
                 try
                 {
-                    using (Stream s = asm.GetManifestResourceStream(res))
+                    using (Stream s = Rebuild.GodhomeResources.Open(res))
                     using (var r = new BinaryReader(s))
                     {
                         if (new string(r.ReadChars(4)) != Magic) continue;

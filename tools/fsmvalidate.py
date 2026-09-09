@@ -17,13 +17,12 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hkpath import hollow_knight_data, silksong_data
 from hkassets import HKBuild
 from monoread import script_ptr, HEADER
 from fsmparse import FsmReader
 
-HK = os.path.expanduser(
-    "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight/Hollow Knight_Data")
+HK = hollow_knight_data()
 
 
 def parse_fsm_component(raw):

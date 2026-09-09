@@ -49,10 +49,9 @@ from meshbake import decode_mesh
 from audiobake import decode_clip, TARGET_RATE
 from monoread import MonoReader, HEADER
 import sequences as seqtool
+from hkpath import hollow_knight_data
 
-DEFAULT_HK = os.path.expanduser(
-    "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight/Hollow Knight_Data")
+DEFAULT_HK = hollow_knight_data()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(os.path.dirname(HERE), "SilksongGodhome", "Baked")

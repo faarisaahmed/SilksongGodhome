@@ -15,15 +15,12 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hkpath import hollow_knight_data, silksong_data
 from hkassets import HKBuild
 from monoread import script_ptr
 
-HK = os.path.expanduser(
-    "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight/Hollow Knight_Data")
-SS = os.path.expanduser(
-    "~/Downloads/Silksong.app/Contents/SharedSupport/prefix/drive_c/GOG Games/"
-    "Hollow Knight Silksong/Hollow Knight Silksong_Data/Managed")
+HK = hollow_knight_data()
+SS = os.path.join(silksong_data(), "Managed")
 
 
 def silksong_types():

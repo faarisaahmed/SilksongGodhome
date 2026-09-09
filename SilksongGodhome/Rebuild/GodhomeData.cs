@@ -319,20 +319,15 @@ namespace SilksongGodhome.Rebuild
                 if (_available != null) return _available;
 
                 _available = new HashSet<string>(StringComparer.Ordinal);
-                foreach (string res in Assembly.GetExecutingAssembly().GetManifestResourceNames())
+                foreach (string n in GodhomeResources.WithExtension(".scene"))
                 {
-                    if (res.StartsWith(ResourcePrefix, StringComparison.Ordinal) &&
-                        res.EndsWith(".scene", StringComparison.Ordinal))
-                    {
-                        _available.Add(res.Substring(ResourcePrefix.Length,
-                            res.Length - ResourcePrefix.Length - ".scene".Length));
-                    }
+                    _available.Add(n.Substring(0, n.Length - ".scene".Length));
                 }
 
                 if (_available.Count == 0)
                 {
                     Plugin.Log.LogWarning(
-                        "Godhome: no baked scenes are embedded in this DLL. Run " +
+                        "Godhome: no baked scenes found, either beside the DLL or in it. Run " +
                         "tools/extract_godhome.py and rebuild.");
                 }
                 else
@@ -357,8 +352,7 @@ namespace SilksongGodhome.Rebuild
         {
             if (Cache.TryGetValue(name, out BakedScene cached)) return cached;
 
-            Stream s = Assembly.GetExecutingAssembly()
-                               .GetManifestResourceStream(ResourcePrefix + name + ".scene");
+            Stream s = GodhomeResources.Open(name + ".scene");
             if (s == null)
             {
                 Plugin.Log.LogError($"Godhome: no baked data for '{name}'.");
@@ -430,8 +424,7 @@ namespace SilksongGodhome.Rebuild
             if (def == null || def.SampleCount <= 0) return null;
 
             string ext = def.Format == 1 ? ".adpcm" : ".pcm";
-            Stream s = Assembly.GetExecutingAssembly()
-                               .GetManifestResourceStream(ResourcePrefix + def.Name + ext);
+            Stream s = GodhomeResources.Open(def.Name + ext);
             if (s == null)
             {
                 Plugin.Log.LogWarning($"Godhome: audio clip '{def.Name}' is missing from the DLL.");
@@ -525,8 +518,7 @@ namespace SilksongGodhome.Rebuild
         /// <summary>Loads an atlas page PNG into a Texture2D.</summary>
         public static Texture2D LoadPage(string pageName)
         {
-            Stream s = Assembly.GetExecutingAssembly()
-                               .GetManifestResourceStream(ResourcePrefix + pageName + ".png");
+            Stream s = GodhomeResources.Open(pageName + ".png");
             if (s == null)
             {
                 Plugin.Log.LogError($"Godhome: atlas page '{pageName}' is missing from the DLL.");

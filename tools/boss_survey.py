@@ -22,15 +22,12 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hkpath import hollow_knight_data, silksong_data
 from hkassets import HKBuild
 from monoread import script_ptr
 
-HK = os.path.expanduser(
-    "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight/Hollow Knight_Data")
-SS_MANAGED = os.path.expanduser(
-    "~/Downloads/Silksong.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight Silksong/Hollow Knight Silksong_Data/Managed")
+HK = hollow_knight_data()
+SS_MANAGED = os.path.join(silksong_data(), "Managed")
 
 ACTION_RE = re.compile(rb"HutongGames\.PlayMaker\.Actions\.[A-Za-z0-9_]{2,60}")
 

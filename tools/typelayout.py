@@ -16,14 +16,28 @@ layout is only trusted if reading a real component with it lands exactly on the 
 byte buffer. A layout that is wrong by a single field lands somewhere else and is
 discarded, so a bad guess costs a skipped component rather than a corrupted scene.
 """
+import json
 import os
 import re
 import subprocess
 import sys
 
-HK_MANAGED = os.path.expanduser(
-    "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight/Hollow Knight_Data/Managed")
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Layouts derived once and shipped, so baking needs neither a decompiler nor the .NET
+# SDK. They describe Hollow Knight's field names and types - metadata, not content - and
+# are regenerated with `python3 typelayout.py --dump`.
+CACHE_FILE = os.path.join(HERE, "layouts.json")
+
+_HK_MANAGED = None
+
+
+def hk_managed():
+    global _HK_MANAGED
+    if _HK_MANAGED is None:
+        from hkpath import hollow_knight_data
+        _HK_MANAGED = os.path.join(hollow_knight_data(), "Managed")
+    return _HK_MANAGED
 
 # PlayMaker is in the list because components reference PlayMakerFSM by field, and tk2d's
 # types live in Assembly-CSharp-firstpass alongside the rest of the third-party code.
@@ -42,6 +56,8 @@ _all_types = None
 # through a field - would otherwise recurse until the stack runs out, which is how
 # Journal_Update_Msg killed a whole prefab.
 _inflight = set()
+_cache_loaded = False
+_disk_cache = {}
 DEBUG = bool(os.environ.get("LAYOUT_DEBUG"))
 
 
@@ -80,7 +96,7 @@ def all_types():
     # One kind per invocation: this ilspycmd takes a single -l value, and a comma list
     # silently produces nothing at all.
     for dll in _ASM:
-        p = os.path.join(HK_MANAGED, dll)
+        p = os.path.join(hk_managed(), dll)
         if not os.path.exists(p):
             continue
         for kind in ("c", "s", "e", "i", "d"):
@@ -165,7 +181,7 @@ def source(type_name):
     full = info[1] if info else type_name
     text = None
     for dll in _ASM:
-        p = os.path.join(HK_MANAGED, dll)
+        p = os.path.join(hk_managed(), dll)
         if not os.path.exists(p):
             continue
         r = subprocess.run(["ilspycmd", "-t", full, p],
@@ -357,10 +373,49 @@ def _class_body(src, short):
     return "\n".join(kept), base
 
 
+def _load_cache():
+    global _cache_loaded, _disk_cache
+    if _cache_loaded:
+        return _disk_cache
+    _cache_loaded = True
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        # JSON has no tuples; kinds come back as lists and have to be restored.
+        _disk_cache = {k: (None if v is None else [(n, _untuple(t)) for n, t in v])
+                       for k, v in raw.items()}
+    except Exception:
+        _disk_cache = {}
+    return _disk_cache
+
+
+def _untuple(k):
+    if isinstance(k, list):
+        if k[0] == "array":
+            return ("array", _untuple(k[1]))
+        if k[0] == "inline":
+            return ("inline", k[1], [(n, _untuple(t)) for n, t in k[2]])
+    return k
+
+
+def _retuple(k):
+    if isinstance(k, tuple):
+        if k[0] == "array":
+            return ["array", _retuple(k[1])]
+        if k[0] == "inline":
+            return ["inline", k[1], [[n, _retuple(t)] for n, t in k[2]]]
+    return k
+
+
 def layout_of(type_name, inline=False, _seen=None):
     """
     [(field_name, kind), ...] in serialised order, or None if the type cannot be laid out.
     """
+    if not inline:
+        cache = _load_cache()
+        if type_name in cache:
+            return cache[type_name]
+
     key = (type_name, inline)
     if key in _layout_cache:
         return _layout_cache[key]
@@ -444,7 +499,30 @@ def _layout_body(type_name, inline, _seen, key):
     return fields
 
 
+def dump_cache(type_names, path=CACHE_FILE):
+    """Derive layouts for these types and write them where the baker will find them."""
+    global _cache_loaded, _disk_cache
+    _cache_loaded, _disk_cache = True, {}      # derive fresh, ignore any existing file
+    out = {}
+    for t in sorted(set(type_names)):
+        lay = layout_of(t)
+        out[t] = None if lay is None else [[n, _retuple(k)] for n, k in lay]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=0, sort_keys=True)
+    known = sum(1 for v in out.values() if v is not None)
+    return known, len(out)
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--dump"]:
+        names = sys.argv[2:]
+        if not names:
+            print("usage: typelayout.py --dump <TypeName> ...")
+            sys.exit(1)
+        k, n = dump_cache(names)
+        print(f"wrote {CACHE_FILE}: {k} of {n} types laid out")
+        sys.exit(0)
+
     for t in sys.argv[1:]:
         f = layout_of(t)
         print(f"{t}: {'UNSUPPORTED' if f is None else ''}")

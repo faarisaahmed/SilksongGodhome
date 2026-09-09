@@ -15,7 +15,13 @@
     rather than committing it. The glob is deliberately non-fatal: with no Baked/
     directory the plugin still compiles and loads, it just has no scenes to rebuild.
   -->
-  <ItemGroup>
+  <!--
+    NoAssets=true builds the plugin with nothing baked in - the small DLL that gets
+    released. It reads its data from a `Godhome` folder beside itself instead (see
+    GodhomeResources), which is what lets people install it without the .NET SDK: run
+    the extractor against their own Hollow Knight and drop the folder next to the DLL.
+  -->
+  <ItemGroup Condition="'$(NoAssets)' != 'true'">
     <EmbeddedResource Include="Baked/**/*.png" LogicalName="Godhome.%(RecursiveDir)%(Filename)%(Extension)" />
     <EmbeddedResource Include="Baked/**/*.scene" LogicalName="Godhome.%(RecursiveDir)%(Filename)%(Extension)" />
     <!-- sequences.bin: the Pantheon boss lists -->

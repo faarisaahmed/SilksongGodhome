@@ -26,6 +26,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hkpath import hollow_knight_data, silksong_data
 from ggformat import Writer
 from hkassets import HKBuild
 from monoread import script_ptr, HEADER, read_fields, MonoReader
@@ -38,9 +39,7 @@ from audiobake import decode_clip
 MAGIC = b"GGBS"
 VERSION = 6
 
-HK = os.path.expanduser(
-    "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
-    "GOG Games/Hollow Knight/Hollow Knight_Data")
+HK = hollow_knight_data()
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "SilksongGodhome", "Baked")
 
