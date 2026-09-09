@@ -39,6 +39,8 @@ class Writer:
     def u8(self, v):    self.buf += struct.pack("<B", v)
     def i32(self, v):   self.buf += struct.pack("<i", v)
     def f32(self, v):   self.buf += struct.pack("<f", float(v))
+    def f64(self, v):   self.buf += struct.pack("<d", float(v))
+    def i64(self, v):   self.buf += struct.pack("<q", int(v))
     def boolean(self, v): self.buf += struct.pack("<?", bool(v))
 
     def string(self, s):
