@@ -2,12 +2,21 @@
 """
 Bake a Hollow Knight boss into data the mod can rebuild.
 
-Stage one: make the boss exist and animate. That means its tk2d sprite collection (the
-sprite definitions and the atlas behind them) and its animation library. Both structures
-are byte-identical between Hollow Knight's tk2d and Silksong's TeamCherry.TK2D, so they
-can be rebuilt as real tk2dSpriteCollectionData / tk2dSpriteAnimation assets at runtime -
-which also means Tk2dPlayAnimation actions in the boss's FSMs will have something real to
-drive once those are wired up.
+A boss is a hierarchy, not a single sprite. Brooding Mawlek's body, head and two arms
+are four separate objects, each with its own tk2dSprite and tk2dSpriteAnimator, and each
+driven by its own FSMs - baking only the root gave an invisible Mawlek, because the root
+sprite is the one part of it you never see. So every node in the tree carries its own
+sprite id, animator and behaviour.
+
+The parts share their art: all four Mawlek objects point at the one "Egg Guardian"
+collection, as False Knight's do at "False Knight". Collections and animation libraries
+are therefore written once into shared tables and referenced by index, which keeps a
+four-part boss the same size on disk as a one-part boss.
+
+Both structures are byte-identical between Hollow Knight's tk2d and Silksong's
+TeamCherry.TK2D, so they rebuild as real tk2dSpriteCollectionData / tk2dSpriteAnimation
+assets at runtime - which is also what gives Tk2dPlayAnimation actions in the FSMs
+something real to drive.
 
     python3 bossbake.py GG_Gruz_Mother "Giant Fly"
 """
@@ -19,7 +28,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ggformat import Writer
 from hkassets import HKBuild
-from monoread import script_ptr, HEADER, read_fields
+from monoread import script_ptr, HEADER, read_fields, MonoReader
 from tk2dparse import Tk2dReader
 from fsmvalidate import parse_fsm_component
 import fsmbake
@@ -27,7 +36,7 @@ from fsmbake import write_fsm, FSM_MAGIC, FSM_VERSION
 from audiobake import decode_clip
 
 MAGIC = b"GGBS"
-VERSION = 4
+VERSION = 5
 
 HK = os.path.expanduser(
     "~/Downloads/Hollow Knight.app/Contents/SharedSupport/prefix/drive_c/"
@@ -50,6 +59,45 @@ HEALTH_HEAD = [
 ]
 
 DAMAGE_HERO = [("damageDealt", "i32"), ("hazardType", "i32")]
+
+
+def read_sprite(raw):
+    """
+    tk2dSprite's serialised fields, in tk2dBaseSprite declaration order.
+
+    collectionInst and _cachedRenderer are not serialised (one is plain private, the
+    other has no [SerializeField]), so _spriteId lands right after the colour and scale.
+    tk2dSprite itself adds no serialised fields of its own. Verified byte-exact on all
+    204 tk2dSprite/tk2dSpriteAnimator components across ten Godhome arenas.
+    """
+    r = MonoReader(raw, HEADER)
+    r.string()
+    d = {"collection": r.pptr(),
+         "colorR": r.f32(), "colorG": r.f32(), "colorB": r.f32(), "colorA": r.f32(),
+         "scaleX": r.f32(), "scaleY": r.f32(), "scaleZ": r.f32(),
+         "spriteId": r.i32()}
+    r.pptr()                                    # boxCollider2D
+    for _ in range(r.i32()): r.pptr()           # polygonCollider2D
+    for _ in range(r.i32()): r.pptr()           # edgeCollider2D
+    r.pptr(); r.pptr()                          # boxCollider, meshCollider
+    for _ in range(r.i32()):                    # meshColliderPositions
+        r.f32(); r.f32(); r.f32()
+    r.pptr()                                    # meshColliderMesh
+    d["renderLayer"] = r.i32()
+    if r.i != len(raw):
+        raise ValueError(f"tk2dSprite consumed {r.i} of {len(raw)}")
+    return d
+
+
+def read_animator(raw):
+    """tk2dSpriteAnimator: library, defaultClipId, playAutomatically."""
+    r = MonoReader(raw, HEADER)
+    r.string()
+    d = {"library": r.pptr(), "defaultClipId": r.i32(), "playAutomatically": r.boolean()}
+    r.align(4)
+    if r.i != len(raw):
+        raise ValueError(f"tk2dSpriteAnimator consumed {r.i} of {len(raw)}")
+    return d
 
 
 def class_of(scene, o, lvl):
@@ -113,138 +161,7 @@ def bake(scene_name, boss_name, log=print):
     boss_clips = {}
     fsmbake.ASSET_RESOLVER = resolve_audio
 
-    # The boss's own FSMs - its behaviour.
-    fsms = []
-    for o in scene.scene_objects("MonoBehaviour"):
-        raw = o.get_raw_data()
-        if class_of(scene, o, lvl) != "PlayMakerFSM":
-            continue
-        gid = struct.unpack_from("<q", raw, 4)[0]
-        if names.get(gid) != boss_name:
-            continue
-        try:
-            fsm, used = parse_fsm_component(raw)
-            if used != len(raw):
-                log(f"  ! FSM on '{boss_name}' consumed {used} of {len(raw)}; skipping")
-                continue
-            fsms.append(fsm)
-        except Exception as e:
-            log(f"  ! FSM parse failed: {e!r}")
-
-    coll_obj = anim_obj = None
-    sprite_id = 0
-    for o in scene.scene_objects("MonoBehaviour"):
-        raw = o.get_raw_data()
-        cn = class_of(scene, o, lvl)
-        if cn not in ("tk2dSprite", "tk2dSpriteAnimator"):
-            continue
-        gid = struct.unpack_from("<q", raw, 4)[0]
-        if names.get(gid) != boss_name:
-            continue
-        r = Tk2dReader(raw, HEADER)
-        r.string()
-        if cn == "tk2dSprite":
-            coll_obj = scene.resolve(r.pptr(), lvl)
-        else:
-            anim_obj = scene.resolve(r.pptr(), lvl)
-
-    if coll_obj is None or anim_obj is None:
-        raise SystemExit(f"'{boss_name}' has no tk2d sprite collection / animator")
-
-    def parse(obj, fn):
-        raw = obj.get_raw_data()
-        r = Tk2dReader(raw, HEADER)
-        r.string()
-        d = getattr(r, fn)()
-        if r.i != len(raw):
-            raise SystemExit(f"{fn} parse consumed {r.i} of {len(raw)} - layout is wrong")
-        return d
-
-    coll = parse(coll_obj, "sprite_collection")
-    anim = parse(anim_obj, "sprite_animation")
-    log(f"  collection '{coll['spriteCollectionName']}': {len(coll['spriteDefinitions'])} defs, "
-        f"{len(coll['textures'])} texture(s)")
-    log(f"  animation: {len(anim['clips'])} clips")
-    if fsms:
-        nst = sum(len(f["states"]) for f in fsms)
-        nac = sum(len(s["actionData"]["actionNames"]) for f in fsms for s in f["states"])
-        log(f"  FSMs: {len(fsms)} ({', '.join(f['name'] for f in fsms)}) "
-            f"- {nst} states, {nac} actions")
-
-    # -- textures ------------------------------------------------------
-    #
-    # Named after the sprite *collection*, not the boss: bosses that share a collection
-    # share its atlas, and those atlases are the biggest thing in the bake. False Knight
-    # and its Head are one 9.7 MB sheet; so are Mato and Oro.
-    os.makedirs(OUT, exist_ok=True)
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in boss_name)
-    coll_safe = "".join(c if c.isalnum() or c in "._-" else "_"
-                        for c in (coll["spriteCollectionName"] or boss_name))
-    tex_names = []
-    for i, tptr in enumerate(coll["textures"]):
-        t = scene.resolve(tptr, scene.file_of(coll_obj))
-        if t is None:
-            continue
-        rname = f"boss_atlas_{coll_safe}_{i}"
-        path = os.path.join(OUT, rname + ".png")
-        if os.path.exists(path):
-            tex_names.append(rname)
-            log(f"    texture {rname}.png (shared, already baked)")
-            continue
-        try:
-            t.read().image.save(path, optimize=True)
-            tex_names.append(rname)
-            log(f"    texture {rname}.png ({os.path.getsize(path)//1024} KB)")
-        except Exception as e:
-            log(f"    ! texture {i} failed: {e!r}")
-
-    # -- write ---------------------------------------------------------
-    w = Writer()
-    w.buf += MAGIC
-    w.i32(VERSION)
-    w.string(boss_name)
-    w.string(scene_name)
-    w.string(coll["spriteCollectionName"] or boss_name)
-
-    w.i32(len(tex_names))
-    for n in tex_names:
-        w.string(n)
-
-    defs = coll["spriteDefinitions"]
-    w.i32(len(defs))
-    for d in defs:
-        w.string(d["name"])
-        w.i32(d["materialId"])
-        w.vec2(*d["texelSize"])
-        for arr, wr in ((d["positions"], w.vec3), (d["uvs"], w.vec2),
-                        (d["boundsData"], w.vec3), (d["untrimmedBoundsData"], w.vec3)):
-            w.i32(len(arr))
-            for v in arr:
-                wr(*v)
-        w.i32(len(d["indices"]))
-        for i in d["indices"]:
-            w.i32(i)
-
-    clips = anim["clips"]
-    w.i32(len(clips))
-    for c in clips:
-        w.string(c["name"])
-        w.f32(c["fps"])
-        w.i32(c["loopStart"])
-        w.i32(c["wrapMode"])
-        w.i32(len(c["frames"]))
-        for fr in c["frames"]:
-            w.i32(fr["spriteId"])
-            w.boolean(fr["triggerEvent"])
-            w.string(fr["eventInfo"] or "")
-            w.i32(fr["eventInt"])
-            w.f32(fr["eventFloat"])
-
-    # -- hierarchy and components -------------------------------------
-    #
-    # A boss needs more than art: a Rigidbody2D for its FSM's SetVelocity2d actions to
-    # push, its own collider as a hitbox, and the child "Hero Damager" that actually
-    # hurts you (inactive until the FSM turns it on).
+    # -- hierarchy -----------------------------------------------------
     tr = {}
     go = {}
     for o in scene.scene_objects("GameObject"):
@@ -266,6 +183,8 @@ def bake(scene_name, boss_name, log=print):
         if d.get("m_Name") == boss_name:
             boss_gid = pid
             break
+    if boss_gid is None:
+        raise SystemExit(f"no GameObject named '{boss_name}' in {scene_name}")
 
     def components(gpid):
         out = []
@@ -299,13 +218,110 @@ def bake(scene_name, boss_name, log=print):
             cur = tr.get(f) if f else None
         return (x, y, z), (sx, sy, sz)
 
-    def write_node(gpid, is_root=False):
+    # -- shared tk2d tables --------------------------------------------
+    #
+    # Keyed by the asset the component points at, not by name: two collections can share
+    # a name across files, and the parts of one boss always point at the same object.
+    collections = []      # (name, [texture resource names], defs)
+    coll_index = {}
+    libraries = []        # (name, clips)
+    lib_index = {}
+
+    def parse_asset(obj, fn):
+        raw = obj.get_raw_data()
+        r = Tk2dReader(raw, HEADER)
+        r.string()
+        d = getattr(r, fn)()
+        if r.i != len(raw):
+            raise SystemExit(f"{fn} parse consumed {r.i} of {len(raw)} - layout is wrong")
+        return d
+
+    def register_collection(obj):
+        key = (scene.file_of(obj), obj.path_id)
+        if key in coll_index:
+            return coll_index[key]
+        coll = parse_asset(obj, "sprite_collection")
+        cname = coll["spriteCollectionName"] or f"coll{len(collections)}"
+        # Atlases are named after the collection, not the boss: bosses that share a
+        # collection share its sheet, and those sheets are the biggest thing in the bake.
+        # False Knight and its Head are one 9.7 MB atlas; so are Mato and Oro.
+        coll_safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in cname)
+        tex_names = []
+        for i, tptr in enumerate(coll["textures"]):
+            t = scene.resolve(tptr, scene.file_of(obj))
+            if t is None:
+                continue
+            rname = f"boss_atlas_{coll_safe}_{i}"
+            path = os.path.join(OUT, rname + ".png")
+            if os.path.exists(path):
+                tex_names.append(rname)
+                continue
+            try:
+                os.makedirs(OUT, exist_ok=True)
+                t.read().image.save(path, optimize=True)
+                tex_names.append(rname)
+                log(f"    atlas {rname}.png ({os.path.getsize(path)//1024} KB)")
+            except Exception as e:
+                log(f"    ! texture {i} of '{cname}' failed: {e!r}")
+        idx = len(collections)
+        collections.append((cname, tex_names, coll["spriteDefinitions"]))
+        coll_index[key] = idx
+        log(f"    collection[{idx}] '{cname}': {len(coll['spriteDefinitions'])} defs, "
+            f"{len(tex_names)} page(s)")
+        return idx
+
+    def register_library(obj):
+        key = (scene.file_of(obj), obj.path_id)
+        if key in lib_index:
+            return lib_index[key]
+        anim = parse_asset(obj, "sprite_animation")
+        idx = len(libraries)
+        # tk2dSpriteAnimation is a MonoBehaviour, and a MonoBehaviour's m_Name is empty -
+        # the readable name is on the GameObject hosting it.
+        lname = f"lib{idx}"
+        try:
+            raw = obj.get_raw_data()
+            fid, pid = struct.unpack_from("<i", raw, 0)[0], struct.unpack_from("<q", raw, 4)[0]
+            host = scene.resolve({"m_FileID": fid, "m_PathID": pid}, scene.file_of(obj))
+            if host is not None:
+                lname = host.read_typetree().get("m_Name") or lname
+        except Exception:
+            pass
+        # Each frame names its own collection. Usually that is the one collection the
+        # library belongs to, but honouring the pointer costs nothing and an animation
+        # that borrows a frame from another sheet then still resolves.
+        lfile = scene.file_of(obj)
+        for c in anim["clips"]:
+            for fr in c["frames"]:
+                fci = -1
+                fobj = scene.resolve(fr["spriteCollection"], lfile)
+                if fobj is not None:
+                    try:
+                        fci = register_collection(fobj)
+                    except SystemExit as e:
+                        log(f"    ! frame collection in '{lname}': {e}")
+                fr["collIndex"] = fci
+        libraries.append((lname, anim["clips"]))
+        lib_index[key] = idx
+        log(f"    library[{idx}] '{lname}': {len(anim['clips'])} clips")
+        return idx
+
+    # -- nodes ---------------------------------------------------------
+    #
+    # write_fsm resolves audio as it goes and the collection tables are filled in while
+    # walking the tree, so the whole node tree is serialised into a scratch writer first
+    # and the tables are written ahead of it afterwards.
+    scratch = Writer()
+    stats = {"sprites": 0, "animators": 0, "fsms": 0, "states": 0, "actions": 0, "nodes": 0}
+
+    def write_node(w, gpid, is_root=False):
         d = go[gpid]
         t = tr.get(g2t.get(gpid)) or {}
         pos = t.get("m_LocalPosition") or {}
         rot = t.get("m_LocalRotation") or {}
         scl = t.get("m_LocalScale") or {}
 
+        stats["nodes"] += 1
         w.string(d.get("m_Name") or "")
         w.i32(int(d.get("m_Layer") or 0))
         w.boolean(bool(d.get("m_IsActive", True)))
@@ -328,6 +344,10 @@ def bake(scene_name, boss_name, log=print):
         circles = []
         health = None
         damage = None
+        sprite = None
+        animator = None
+        node_fsms = []
+
         for o in components(gpid):
             n = o.type.name
             if n == "Rigidbody2D":
@@ -336,7 +356,9 @@ def bake(scene_name, boss_name, log=print):
                 boxes.append(o.read_typetree())
             elif n == "CircleCollider2D":
                 circles.append(o.read_typetree())
-            elif n == "MonoBehaviour":
+            elif n != "MonoBehaviour":
+                continue
+            else:
                 raw2 = o.get_raw_data()
                 cn = class_of(scene, o, lvl)
                 if cn == "HealthManager":
@@ -349,6 +371,63 @@ def bake(scene_name, boss_name, log=print):
                         damage = read_fields(raw2, DAMAGE_HERO)
                     except Exception:
                         damage = None
+                elif cn == "tk2dSprite":
+                    try:
+                        sprite = read_sprite(raw2)
+                    except Exception as e:
+                        log(f"    ! tk2dSprite on '{d.get('m_Name')}' failed: {e!r}")
+                elif cn == "tk2dSpriteAnimator":
+                    try:
+                        animator = read_animator(raw2)
+                    except Exception as e:
+                        log(f"    ! tk2dSpriteAnimator on '{d.get('m_Name')}' failed: {e!r}")
+                elif cn == "PlayMakerFSM":
+                    try:
+                        fsm, used = parse_fsm_component(raw2)
+                        if used != len(raw2):
+                            log(f"  ! FSM on '{d.get('m_Name')}' consumed {used} of "
+                                f"{len(raw2)}; skipped")
+                        else:
+                            node_fsms.append(fsm)
+                    except Exception as e:
+                        log(f"  ! FSM parse on '{d.get('m_Name')}' failed: {e!r}")
+
+        # Sprite. The collection index is what matters: the parts of a multi-part boss
+        # all point at one collection and differ only in which sprite of it they show.
+        ci = -1
+        if sprite is not None:
+            cobj = scene.resolve(sprite["collection"], lvl)
+            if cobj is not None:
+                try:
+                    ci = register_collection(cobj)
+                except SystemExit as e:
+                    log(f"    ! collection for '{d.get('m_Name')}': {e}")
+                    ci = -1
+        w.boolean(ci >= 0)
+        if ci >= 0:
+            stats["sprites"] += 1
+            w.i32(ci)
+            w.i32(sprite["spriteId"])
+            w.f32(sprite["colorR"]); w.f32(sprite["colorG"])
+            w.f32(sprite["colorB"]); w.f32(sprite["colorA"])
+            w.vec3(sprite["scaleX"], sprite["scaleY"], sprite["scaleZ"])
+            w.i32(sprite["renderLayer"])
+
+        li = -1
+        if animator is not None:
+            aobj = scene.resolve(animator["library"], lvl)
+            if aobj is not None:
+                try:
+                    li = register_library(aobj)
+                except SystemExit as e:
+                    log(f"    ! library for '{d.get('m_Name')}': {e}")
+                    li = -1
+        w.boolean(li >= 0)
+        if li >= 0:
+            stats["animators"] += 1
+            w.i32(li)
+            w.i32(animator["defaultClipId"])
+            w.boolean(animator["playAutomatically"])
 
         w.boolean(rb is not None)
         if rb is not None:
@@ -387,6 +466,13 @@ def bake(scene_name, boss_name, log=print):
             w.i32(int(damage["damageDealt"]))
             w.i32(int(damage["hazardType"]))
 
+        w.i32(len(node_fsms))
+        for f in node_fsms:
+            stats["fsms"] += 1
+            stats["states"] += len(f["states"])
+            stats["actions"] += sum(len(s["actionData"]["actionNames"]) for s in f["states"])
+            write_fsm(w, f)
+
         kids = []
         for c in ((tr.get(g2t.get(gpid)) or {}).get("m_Children") or []):
             cp = (tr.get(c["m_PathID"]) or {}).get("m_GameObject", {}).get("m_PathID")
@@ -394,16 +480,59 @@ def bake(scene_name, boss_name, log=print):
                 kids.append(cp)
         w.i32(len(kids))
         for k in kids:
-            write_node(k)
+            write_node(w, k)
 
-    write_node(boss_gid, is_root=True)
+    write_node(scratch, boss_gid, is_root=True)
+    log(f"  {stats['nodes']} nodes: {stats['sprites']} sprite(s), "
+        f"{stats['animators']} animator(s), {stats['fsms']} FSM(s) "
+        f"({stats['states']} states, {stats['actions']} actions)")
+    if stats["sprites"] == 0:
+        raise SystemExit(f"'{boss_name}' has no tk2dSprite anywhere in its hierarchy")
 
-    # write_fsm resolves audio as it goes, so the clip table is written after it and the
-    # reader seeks back - instead, FSMs are serialised into a scratch writer first.
-    scratch = Writer()
-    scratch.i32(len(fsms))
-    for f in fsms:
-        write_fsm(scratch, f)
+    # -- write ---------------------------------------------------------
+    w = Writer()
+    w.buf += MAGIC
+    w.i32(VERSION)
+    w.string(boss_name)
+    w.string(scene_name)
+
+    w.i32(len(collections))
+    for cname, tex_names, defs in collections:
+        w.string(cname)
+        w.i32(len(tex_names))
+        for n in tex_names:
+            w.string(n)
+        w.i32(len(defs))
+        for d in defs:
+            w.string(d["name"])
+            w.i32(d["materialId"])
+            w.vec2(*d["texelSize"])
+            for arr, wr in ((d["positions"], w.vec3), (d["uvs"], w.vec2),
+                            (d["boundsData"], w.vec3), (d["untrimmedBoundsData"], w.vec3)):
+                w.i32(len(arr))
+                for v in arr:
+                    wr(*v)
+            w.i32(len(d["indices"]))
+            for i in d["indices"]:
+                w.i32(i)
+
+    w.i32(len(libraries))
+    for lname, clips in libraries:
+        w.string(lname)
+        w.i32(len(clips))
+        for c in clips:
+            w.string(c["name"])
+            w.f32(c["fps"])
+            w.i32(c["loopStart"])
+            w.i32(c["wrapMode"])
+            w.i32(len(c["frames"]))
+            for fr in c["frames"]:
+                w.i32(fr.get("collIndex", -1))
+                w.i32(fr["spriteId"])
+                w.boolean(fr["triggerEvent"])
+                w.string(fr["eventInfo"] or "")
+                w.i32(fr["eventInt"])
+                w.f32(fr["eventFloat"])
 
     w.i32(len(boss_clips))
     for rname, (count, rate) in sorted(boss_clips.items()):
@@ -415,7 +544,9 @@ def bake(scene_name, boss_name, log=print):
 
     w.buf += scratch.bytes()
 
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in boss_name)
     path = os.path.join(OUT, f"boss_{safe}.boss")
+    os.makedirs(OUT, exist_ok=True)
     with open(path, "wb") as f:
         f.write(w.bytes())
     log(f"  -> {os.path.basename(path)} ({os.path.getsize(path)//1024} KB)")

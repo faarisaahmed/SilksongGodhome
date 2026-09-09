@@ -8,9 +8,12 @@ namespace SilksongGodhome.Godhome
     /// <summary>
     /// Reads a baked Hollow Knight boss.
     ///
-    /// Written by tools/bossbake.py. Stage one carries what makes a boss exist and
-    /// animate: its tk2d sprite collection (definitions + atlas) and its animation
-    /// library. tk2dSpriteDefinition, tk2dSpriteCollectionData, tk2dSpriteAnimation,
+    /// Written by tools/bossbake.py. A boss is a hierarchy: Brooding Mawlek's body, head
+    /// and arms are four objects, each with its own sprite, animator and FSMs. They share
+    /// their art, so collections and animation libraries live in tables at the top of the
+    /// file and each node references them by index.
+    ///
+    /// tk2dSpriteDefinition, tk2dSpriteCollectionData, tk2dSpriteAnimation,
     /// tk2dSpriteAnimationClip and tk2dSpriteAnimationFrame are byte-identical between
     /// Hollow Knight's tk2d and Silksong's TeamCherry.TK2D, so these rebuild as real
     /// tk2d assets rather than as an approximation.
@@ -19,7 +22,7 @@ namespace SilksongGodhome.Godhome
     {
         private const string Prefix = "Godhome.";
         private const string Magic = "GGBS";
-        private const int Version = 4;
+        private const int Version = 5;
 
         public sealed class SpriteDef
         {
@@ -35,6 +38,7 @@ namespace SilksongGodhome.Godhome
 
         public sealed class Frame
         {
+            public int CollectionIndex;
             public int SpriteId;
             public bool TriggerEvent;
             public string EventInfo;
@@ -64,6 +68,21 @@ namespace SilksongGodhome.Godhome
             public bool Trigger, Enabled;
         }
 
+        /// <summary>A collection plus the atlas pages behind it, shared between nodes.</summary>
+        public sealed class Collection
+        {
+            public string Name;
+            public string[] Textures;
+            public SpriteDef[] Defs;
+        }
+
+        /// <summary>An animation library, shared between nodes.</summary>
+        public sealed class Library
+        {
+            public string Name;
+            public Clip[] Clips;
+        }
+
         /// <summary>One object in the boss's hierarchy, with the parts that make it a fight.</summary>
         public sealed class Node
         {
@@ -72,6 +91,18 @@ namespace SilksongGodhome.Godhome
             public bool Active;
             public Vector3 Position, Scale;
             public Quaternion Rotation;
+
+            public bool HasSprite;
+            public int CollectionIndex, SpriteId, RenderLayer;
+            public Color SpriteColor;
+            public Vector3 SpriteScale;
+
+            public bool HasAnimator;
+            public int LibraryIndex, DefaultClipId;
+            public bool PlayAutomatically;
+
+            public System.Collections.Generic.List<FsmData.Fsm> Fsms =
+                new System.Collections.Generic.List<FsmData.Fsm>();
 
             public bool HasBody;
             public float Mass, GravityScale, LinearDrag, AngularDrag;
@@ -98,16 +129,12 @@ namespace SilksongGodhome.Godhome
         {
             public string Name;
             public string Scene;
-            public string CollectionName;
-            public string[] Textures;
-            public SpriteDef[] Defs;
-            public Clip[] Clips;
+            public Collection[] Collections;
+            public Library[] Libraries;
             public Node Root;
             /// <summary>Clips the FSMs reference, by resource name.</summary>
             public System.Collections.Generic.Dictionary<string, ClipInfo> FsmClips =
                 new System.Collections.Generic.Dictionary<string, ClipInfo>();
-            public System.Collections.Generic.List<FsmData.Fsm> Fsms =
-                new System.Collections.Generic.List<FsmData.Fsm>();
         }
 
         public static Boss Load(string bossName)
@@ -135,57 +162,66 @@ namespace SilksongGodhome.Godhome
                     {
                         Name = r.ReadString(),
                         Scene = r.ReadString(),
-                        CollectionName = r.ReadString(),
                     };
 
-                    b.Textures = new string[r.ReadInt32()];
-                    for (int i = 0; i < b.Textures.Length; i++) b.Textures[i] = r.ReadString();
-
-                    b.Defs = new SpriteDef[r.ReadInt32()];
-                    for (int i = 0; i < b.Defs.Length; i++)
+                    b.Collections = new Collection[r.ReadInt32()];
+                    for (int ci = 0; ci < b.Collections.Length; ci++)
                     {
-                        var d = new SpriteDef
+                        var col = new Collection { Name = r.ReadString() };
+                        col.Textures = new string[r.ReadInt32()];
+                        for (int i = 0; i < col.Textures.Length; i++) col.Textures[i] = r.ReadString();
+                        col.Defs = new SpriteDef[r.ReadInt32()];
+                        for (int i = 0; i < col.Defs.Length; i++)
                         {
-                            Name = r.ReadString(),
-                            MaterialId = r.ReadInt32(),
-                            TexelSize = new Vector2(r.ReadSingle(), r.ReadSingle()),
-                        };
-                        d.Positions = ReadV3(r);
-                        d.Uvs = ReadV2(r);
-                        d.BoundsData = ReadV3(r);
-                        d.UntrimmedBoundsData = ReadV3(r);
-                        int n = r.ReadInt32();
-                        d.Indices = new int[n];
-                        for (int k = 0; k < n; k++) d.Indices[k] = r.ReadInt32();
-                        b.Defs[i] = d;
-                    }
-
-                    b.Clips = new Clip[r.ReadInt32()];
-                    for (int i = 0; i < b.Clips.Length; i++)
-                    {
-                        var c = new Clip
-                        {
-                            Name = r.ReadString(),
-                            Fps = r.ReadSingle(),
-                            LoopStart = r.ReadInt32(),
-                            WrapMode = r.ReadInt32(),
-                        };
-                        c.Frames = new Frame[r.ReadInt32()];
-                        for (int k = 0; k < c.Frames.Length; k++)
-                        {
-                            c.Frames[k] = new Frame
+                            var d = new SpriteDef
                             {
-                                SpriteId = r.ReadInt32(),
-                                TriggerEvent = r.ReadBoolean(),
-                                EventInfo = r.ReadString(),
-                                EventInt = r.ReadInt32(),
-                                EventFloat = r.ReadSingle(),
+                                Name = r.ReadString(),
+                                MaterialId = r.ReadInt32(),
+                                TexelSize = new Vector2(r.ReadSingle(), r.ReadSingle()),
                             };
+                            d.Positions = ReadV3(r);
+                            d.Uvs = ReadV2(r);
+                            d.BoundsData = ReadV3(r);
+                            d.UntrimmedBoundsData = ReadV3(r);
+                            int n = r.ReadInt32();
+                            d.Indices = new int[n];
+                            for (int k = 0; k < n; k++) d.Indices[k] = r.ReadInt32();
+                            col.Defs[i] = d;
                         }
-                        b.Clips[i] = c;
+                        b.Collections[ci] = col;
                     }
 
-                    b.Root = ReadNode(r);
+                    b.Libraries = new Library[r.ReadInt32()];
+                    for (int li = 0; li < b.Libraries.Length; li++)
+                    {
+                        var lib = new Library { Name = r.ReadString() };
+                        lib.Clips = new Clip[r.ReadInt32()];
+                        for (int i = 0; i < lib.Clips.Length; i++)
+                        {
+                            var c = new Clip
+                            {
+                                Name = r.ReadString(),
+                                Fps = r.ReadSingle(),
+                                LoopStart = r.ReadInt32(),
+                                WrapMode = r.ReadInt32(),
+                            };
+                            c.Frames = new Frame[r.ReadInt32()];
+                            for (int k = 0; k < c.Frames.Length; k++)
+                            {
+                                c.Frames[k] = new Frame
+                                {
+                                    CollectionIndex = r.ReadInt32(),
+                                    SpriteId = r.ReadInt32(),
+                                    TriggerEvent = r.ReadBoolean(),
+                                    EventInfo = r.ReadString(),
+                                    EventInt = r.ReadInt32(),
+                                    EventFloat = r.ReadSingle(),
+                                };
+                            }
+                            lib.Clips[i] = c;
+                        }
+                        b.Libraries[li] = lib;
+                    }
 
                     int nclips = r.ReadInt32();
                     for (int i = 0; i < nclips; i++)
@@ -194,18 +230,14 @@ namespace SilksongGodhome.Godhome
                         b.FsmClips[cn] = new ClipInfo { SampleCount = r.ReadInt32(), Rate = r.ReadInt32() };
                     }
 
-                    int nf = r.ReadInt32();
-                    for (int i = 0; i < nf; i++) b.Fsms.Add(FsmData.ReadFsm(r));
+                    b.Root = ReadNode(r);
 
-                    int st = 0, ac = 0;
-                    foreach (FsmData.Fsm f in b.Fsms)
-                    {
-                        st += f.States.Length;
-                        foreach (FsmData.State s2 in f.States) ac += s2.Actions.ActionNames.Length;
-                    }
+                    int nodes = 0, st = 0, ac = 0, nf = 0;
+                    Walk(b.Root, ref nodes, ref nf, ref st, ref ac);
                     Plugin.Log.LogInfo(
-                        $"Godhome: loaded boss '{b.Name}' - {b.Defs.Length} sprites, {b.Clips.Length} clips, " +
-                        $"{b.Fsms.Count} FSMs ({st} states, {ac} actions).");
+                        $"Godhome: loaded boss '{b.Name}' - {nodes} nodes, {b.Collections.Length} " +
+                        $"collection(s), {b.Libraries.Length} librar(ies), {nf} FSMs " +
+                        $"({st} states, {ac} actions).");
                     return b;
                 }
             }
@@ -214,6 +246,19 @@ namespace SilksongGodhome.Godhome
                 Plugin.Log.LogError($"Godhome: baked boss '{bossName}' is unreadable: {e}");
                 return null;
             }
+        }
+
+        private static void Walk(Node n, ref int nodes, ref int fsms, ref int states, ref int actions)
+        {
+            if (n == null) return;
+            nodes++;
+            fsms += n.Fsms.Count;
+            foreach (FsmData.Fsm f in n.Fsms)
+            {
+                states += f.States.Length;
+                foreach (FsmData.State s in f.States) actions += s.Actions.ActionNames.Length;
+            }
+            foreach (Node c in n.Children) Walk(c, ref nodes, ref fsms, ref states, ref actions);
         }
 
         private static Node ReadNode(BinaryReader r)
@@ -227,6 +272,24 @@ namespace SilksongGodhome.Godhome
                 Rotation = new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
                 Scale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()),
             };
+
+            n.HasSprite = r.ReadBoolean();
+            if (n.HasSprite)
+            {
+                n.CollectionIndex = r.ReadInt32();
+                n.SpriteId = r.ReadInt32();
+                n.SpriteColor = new Color(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                n.SpriteScale = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                n.RenderLayer = r.ReadInt32();
+            }
+
+            n.HasAnimator = r.ReadBoolean();
+            if (n.HasAnimator)
+            {
+                n.LibraryIndex = r.ReadInt32();
+                n.DefaultClipId = r.ReadInt32();
+                n.PlayAutomatically = r.ReadBoolean();
+            }
 
             n.HasBody = r.ReadBoolean();
             if (n.HasBody)
@@ -270,6 +333,9 @@ namespace SilksongGodhome.Godhome
 
             n.HasDamage = r.ReadBoolean();
             if (n.HasDamage) { n.DamageDealt = r.ReadInt32(); n.HazardType = r.ReadInt32(); }
+
+            int nfsm = r.ReadInt32();
+            for (int i = 0; i < nfsm; i++) n.Fsms.Add(FsmData.ReadFsm(r));
 
             n.Children = new Node[r.ReadInt32()];
             for (int i = 0; i < n.Children.Length; i++) n.Children[i] = ReadNode(r);

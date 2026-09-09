@@ -242,6 +242,10 @@ namespace SilksongGodhome.Rebuild
                 // Put the arena's own bosses back, where Hollow Knight had them.
                 try
                 {
+                    // Before the bosses, not after: their FSMs read
+                    // BossSceneController.IsBossScene in their very first state, and that
+                    // is what decides whether they fight or stand still.
+                    Godhome.BossSceneHost.Install(root);
                     BossBuilder.SpawnForScene(sceneName);
                 }
                 catch (Exception e)

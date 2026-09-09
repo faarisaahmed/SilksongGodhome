@@ -173,6 +173,21 @@ BOSS_SCENE_HEAD = [
     ("sceneName", "string"),
 ]
 
+# tk2dSprite's serialised head. collectionInst and _cachedRenderer are not serialised,
+# so spriteId lands at offset 40 after m_Name.
+TK2D_SPRITE_HEAD = [
+    ("collection", "pptr"),
+    ("colorR", "f32"), ("colorG", "f32"), ("colorB", "f32"), ("colorA", "f32"),
+    ("scaleX", "f32"), ("scaleY", "f32"), ("scaleZ", "f32"),
+    ("spriteId", "i32"),
+]
+
+TK2D_ANIMATOR_HEAD = [
+    ("library", "pptr"),
+    ("defaultClipId", "i32"),
+    ("playAutomatically", "bool"),
+]
+
 # A Hall of Gods statue. bossScene and dreamBossScene are the first two serialised
 # fields; the BossUIDetails structs that follow are not needed.
 BOSS_STATUE_HEAD = [
